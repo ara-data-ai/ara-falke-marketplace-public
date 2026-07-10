@@ -1,0 +1,6 @@
+{
+  "_comment": "Per-bidder qualitative notes (Marvin §8 firm-specific bullets). These are NOT reproducible from the matrix; supply from bidder files / prior knowledge. Default behavior with no notes = templated price-posture bullets only. Examples below are SYNTHETIC placeholders to show the shape — replace with real, sourced findings. All firms are fictional.",
+  "Acme": {"strengths": ["Strong commercial-maturity signal (placeholder — confirm)."], "risks": []},
+  "Borealis": {"strengths": ["Structured operational approach (placeholder — confirm)."], "risks": []},
+  "Dorne": {"strengths": [], "risks": ["Earlier bid-form inconsistencies noted (placeholder — confirm)."]}
+}

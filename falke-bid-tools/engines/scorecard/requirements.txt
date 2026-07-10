@@ -1,0 +1,27 @@
+# Falke bid-scorecard skill — runtime dependencies.
+#
+# NOTE (live-grounding rule): these lower bounds were chosen for compatibility
+# with the local interpreter (Python 3.9.6). Before a production run, confirm
+# the latest stable versions and the Python version in the target environment;
+# WeasyPrint in particular has raised its minimum Python in recent majors
+# (verify before pinning higher). Pin exact versions in a lockfile for CI.
+
+openpyxl>=3.1            # xlsx parsing (read-only, data_only)
+PyYAML>=6.0             # config block
+Jinja2>=3.1             # template rendering (Anna's HTML)
+numpy>=1.24             # curve re-fit math
+scipy>=1.10             # scipy.optimize.least_squares (curve re-fit)
+
+# --- PDF rendering ---
+# DEFAULT engine = headless Chromium via Playwright (this is what is installed
+# in the Falke environment; invoked with print_background=True and
+# prefer_css_page_size=True so Anna's @page size is honored). After install run:
+#   playwright install chromium
+playwright>=1.40
+# Optional ALTERNATIVE engine (NOT installed by default; select with
+# --engine weasyprint). Pulls native deps (pango/cairo); raised its minimum
+# Python in recent majors — verify before pinning higher.
+#   WeasyPrint>=60        # requires Python >= 3.9
+
+# --- dev / test ---
+pytest>=7.4

@@ -1,0 +1,36 @@
+# Falke bid-tools plugin — shipped-bundle hygiene
+# ------------------------------------------------
+# Keep the shipped plugin free of internal run-log scaffolding, client inputs/
+# outputs, generated spreadsheets, and Python build artifacts. These directories
+# are useful in the working tree but must never enter the pushed (private) repo.
+
+# Internal run-log capture scaffolding (not needed at runtime)
+captures/
+
+# Per-project client inputs / generated outputs
+Inputs/
+Outputs/
+
+# Generated spreadsheets (engine output + bundled binary fixtures/templates)
+*.xlsx
+
+# EXCEPTION: the blank fill-in runtime templates MUST ship — Falke fills these
+# out per job (baseline band + trade lines; the scoring framework; the detailed
+# category scores). They carry no client data. Keep them in the pushed bundle.
+!engines/scorecard/templates/baseline-template.xlsx
+!engines/scorecard/templates/scoring-framework-template.xlsx
+!engines/scorecard/templates/category-scores-template.xlsx
+
+# Out-of-band real-firm overlay — NEVER commit. Distributed to Falke laptops
+# via a non-public channel; absent-overlay is the safe default (known-firms
+# overlay spec §1/§4). Ignored by three patterns so it cannot be committed from
+# any working directory.
+engines/matrix/config/known_firms.local.yaml
+config/known_firms.local.yaml
+**/known_firms.local.yaml
+
+# Python build / cache artifacts
+__pycache__/
+.pytest_cache/
+*.pyc
+venv/

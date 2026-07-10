@@ -1,0 +1,18 @@
+{
+  "name": "ara-falke",
+  "owner": {
+    "name": "ARA Data & AI Consulting"
+  },
+  "plugins": [
+    {
+      "name": "falke-bid-tools",
+      "source": "./falke-bid-tools",
+      "description": "Turn a folder of contractor bid PDFs into a leveled bid-comparison matrix and a board-ready scorecard."
+    },
+    {
+      "name": "falke-business-pulse",
+      "source": "./falke-business-pulse",
+      "description": "Falke's morning Chief-of-Staff routine: read both Falke mailboxes, calendar, and Dropbox; produce a one-page business pulse; draft (never send) nudges; post one Teams digest."
+    }
+  ]
+}

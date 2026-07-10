@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scorecard Summary — {{ project_name }}</title>
+
+<!--
+{#
+================================================================================
+ FALKE CORP · BID-SCORECARD SUMMARY — DATA-POPULATABLE TEMPLATE (companion doc)
+ Designed by Anna (ARA Digital & Brand Design) for engineering hand-off (Christine).
+ A SHORT (1–2 page) plain-English board brief that PAIRS with the landscape
+ bid-comparison scorecard (scorecard-template.html). The scorecard is the data;
+ this is the READ — who won, why, runners-up, key caveats. Same FALKE brand
+ system (shared tokens), but portrait Letter and memo-style: lots of whitespace,
+ board-friendly, no data dump.
+================================================================================
+
+ HOW TO RENDER  (identical contract to the scorecard)
+ -------------
+ Single self-contained HTML file: CSS embedded, FALKE wordmark embedded as a
+ base64 data URI, system-font stack only — no external assets at render time.
+ Populate the {{ tokens }} / {% for %} loops below, then render to PDF.
+
+ RECOMMENDED ENGINE: headless Chromium (Playwright / Puppeteer) OR WeasyPrint.
+   - Page size is PORTRAIT LETTER (8.5in x 11in). The scorecard is landscape
+     (it is a wide data table); this brief is a memo, so portrait is the
+     intentional, board-familiar one-pager format. Both ship as a matched set.
+   - Chromium: page.pdf({ printBackground: true, preferCSSPageSize: true }).
+     printBackground MUST be true — the cyan header band and the recommendation
+     callout are background color.
+   - WeasyPrint: backgrounds print by default; no extra flag needed.
+
+ TEMPLATING CONVENTION  (matches the scorecard — JINJA2)
+ ---------------------
+     from jinja2 import Template
+     html = Template(open("scorecard-summary-template.html").read()).render(**context)
+
+ Every loop is ALSO bracketed by <!-- REPEAT:name --> ... <!-- /REPEAT:name -->
+ markers so a plain-Python string builder can clone the block instead. Pick ONE.
+
+================================================================================
+ CONTEXT OBJECT — every variable Christine must supply
+================================================================================
+
+ project_name      str   e.g. "SAMPLE TOWER · Lobby Renovation"
+                         (rendered as: "Scorecard Summary — {{ project_name }}")
+
+ # ---- Recommendation / winner (the prominent callout) ----
+ winner_name       str   e.g. "Acme Restoration"
+ winner_rationale  str   1 short paragraph — why they're best value (plain English)
+
+ # ---- Ranking at a glance (compact supporting table) ----
+ ranked_bidders    list[ {rank, name, tier, overall} ]   ordered Rank #1 first
+                         rank    int|str  e.g. 1
+                         name    str
+                         tier    str      short tier label, e.g. "Top tier"
+                         overall str      the /100, e.g. "86"
+
+ # ---- Runners-up note ----
+ runners_up_note   str   1–2 sentences on the close contenders / why they trail
+
+ # ---- How to read this (methodology, plain English) ----
+ methodology_plain str   1 short paragraph: what the scorecard does, in plain terms
+
+ # ---- Important caveats (board-facing reading guidance) ----
+ caveats           list[str]   e.g. bid-derived baseline · presentation curve ·
+                         judgment scores · informs-not-decides. Rendered as a list.
+
+ # ---- Bottom line ----
+ bottom_line       str   1–2 sentence closing recommendation in plain English
+
+ # ---- footer / provenance (optional, recommended for board docs) ----
+ footer_note       str   e.g. "Falke Corp · prepared by ARA · 2026-05-22"
+                         (renders between the two fixed attributions, same as scorecard)
+
+================================================================================
+#}
+-->
+
+<style>
+/* ============================================================================
+   DESIGN TOKENS — FALKE MATRIX-ALIGNED SCHEME v2 — SHARED WITH THE SCORECARD
+   Reproduced verbatim from scorecard-template.html so the two docs read as a
+   matched set: aqua #A3EAF3 header bands, process-cyan #00A9CA band + accents,
+   Avenir type — the scheme of Falke's own bid-comparison matrix xlsx. Orange
+   is DEMOTED to the thin accent rule (logo tie-in) after client feedback.
+   See _brand-ref/matrix-aligned-scheme.md. Only the type SCALE is nudged up
+   for memo readability; brand chrome values are identical.
+   ========================================================================== */
+:root {
+  /* Brand core — Falke matrix palette — IDENTICAL to scorecard */
+  --navy:        #00A9CA;  /* MATRIX CYAN — header band + emphasis bands (matrix total color) */
+  --navy-deep:   #007A93;  /* deep cyan — section titles, label accents (WCAG-safe on white) */
+  --steel:       #007A93;  /* secondary deep cyan (reserved) */
+  --table-header:#A3EAF3;  /* MATRIX AQUA — table header rows (ink bold text, as in the matrix) */
+  --gold:        #00A9CA;  /* cyan structural keylines + accent stripes */
+  --ink:         #1A2A33;  /* body text — near-black (matrix body is black Avenir) */
+  --muted:       #5E6E76;  /* secondary / sub-label text */
+  --teal:        #007A93;  /* sparing secondary accent */
+  --orange:      #F15022;  /* FALKE logo orange — RESTRAINED: thin accent rule only */
+
+  /* Surfaces — IDENTICAL to scorecard */
+  --paper:       #FFFFFF;
+  --chip-bg:     #F0F7FA;  /* callout + ranking surfaces — faint aqua-gray */
+  --chip-border: #C9D8DE;
+  --zebra:       #F4FAFC;  /* alternating table row — faint aqua tint */
+  --rule:        #BFC9CD;  /* hairline borders — gray grid, echoes the matrix's gray borders */
+  --header-text: #FFFFFF;  /* white knockout — on cyan band */
+
+  /* Semantic accent (used sparingly here) — IDENTICAL to scorecard */
+  --green-bg:    #D8EFD9;  --green-fg:   #1F6B2E;
+  --green-tint:  #EAF6EB;
+  --amber-soft:  #E8F6FA;  /* light-cyan panel ground — caveats panel */
+
+  /* Type scale (pt for print fidelity) — MEMO scale: larger than the data card.
+     The scorecard packs a wide table at 7–8pt; a board read wants air at 10–11pt. */
+  --fs-title:    23pt;     /* header band title */
+  --fs-subtitle: 8.5pt;    /* header band subtitle — matches scorecard */
+  --fs-section:  12.5pt;   /* section titles — deep cyan */
+  --fs-lead:     12pt;     /* winner name in callout */
+  --fs-body:     10.5pt;   /* memo body copy */
+  --fs-th:       8pt;      /* ranking table header */
+  --fs-td:       9.5pt;    /* ranking table cell */
+  --fs-small:    7.5pt;    /* footer / labels */
+
+  /* Spacing — generous for a board read */
+  --gap:         18px;
+  --pad-cell:    6px 10px;
+}
+
+/* ---- Page / print setup — PORTRAIT Letter (memo) -------------------------- */
+@page {
+  size: 8.5in 11in;                 /* Portrait Letter — memo-style brief */
+  margin: 0.5in 0.7in 0.6in 0.7in;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  /* FALKE BODY stack — IDENTICAL to scorecard: AVENIR, the face of Falke's
+     own bid-comparison matrix (web-safe fallbacks, no @font-face) */
+  font-family: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+/* FALKE DISPLAY treatment — IDENTICAL to scorecard (same Avenir family, bold,
+   as the matrix bolds Avenir for its header/subtotal/total rows) */
+.header-band .title,
+.section-title,
+.callout .winner-name {
+  font-family: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  font-weight: 700;
+}
+
+/* ============================================================================
+   HEADER BAND — FALKE wordmark (left) · title (center) · subtitle (right)
+   IDENTICAL structure & styling to the scorecard header band.
+   ========================================================================== */
+.header-band {
+  background: var(--navy);   /* flat matrix cyan — matches the scorecard */
+  color: var(--header-text);
+  padding: 18px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.header-band .title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  margin: 0;
+  flex: 1;
+  text-align: center;
+  line-height: 1.15;
+}
+.header-band .subtitle {
+  font-size: var(--fs-subtitle);
+  font-weight: 400;
+  text-align: right;
+  color: #D9F2F8;                    /* cool near-white — matches scorecard */
+  max-width: 240px;
+  line-height: 1.3;
+}
+.accent-rule {                        /* thin ORANGE rule under the band — the one restrained
+                                         orange element (logo tie-in); matches scorecard */
+  height: 3px;
+  background: var(--orange);
+  width: 100%;
+}
+/* ---- FALKE wordmark — the REAL white-knockout logo, embedded base64 ----------
+   Same asset & treatment as the scorecard header: pure-white recolor of the
+   FALKE wordmark on transparent ground, left-anchored, ~38px tall, reads crisply
+   on the cyan band with no plate. The data URI below is the byte-for-byte same
+   string used in scorecard-template.html (source: _brand-ref/FALKE-logo-white.b64.txt). */
+.falke-wordmark {
+  display: block;
+  height: 38px;
+  width: auto;
+  user-select: none;
+}
+
+/* ============================================================================
+   DOC BODY WRAP — comfortable measure for a read
+   ========================================================================== */
+.doc { padding: 4px 2px 0; }
+
+/* ============================================================================
+   SECTIONS / HEADINGS — deep-cyan section titles (matches scorecard)
+   ========================================================================== */
+.section { margin-top: 22px; }
+.section-title {
+  font-size: var(--fs-section);
+  font-weight: 700;
+  color: var(--navy-deep);
+  margin: 0 0 8px;
+  break-after: avoid; page-break-after: avoid;
+}
+.section p { margin: 0 0 6px; }
+.section p:last-child { margin-bottom: 0; }
+
+/* ============================================================================
+   RECOMMENDATION CALLOUT — the prominent winner block.
+   Matrix-cyan left-rule + soft ground (the matrix's "total row" color marks
+   the document's conclusion); the winner name uses the display face. This is
+   the document's hero element.
+   ========================================================================== */
+.callout {
+  margin-top: 18px;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-left: 6px solid var(--navy);   /* matrix-cyan accent */
+  border-radius: 3px;
+  padding: 16px 20px 18px;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.callout .eyebrow {
+  font-size: var(--fs-small);
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--navy-deep);
+  margin: 0 0 6px;
+}
+.callout .winner-name {
+  font-size: var(--fs-lead);
+  font-size: 18pt;
+  color: var(--ink);
+  margin: 0 0 8px;
+  line-height: 1.15;
+}
+.callout .winner-rationale {
+  font-size: var(--fs-body);
+  color: var(--ink);
+  margin: 0;
+}
+
+/* ============================================================================
+   RANKING AT A GLANCE — compact supporting table (matrix-aqua header, zebra
+   body). Same table chrome as the scorecard but small — it SUPPORTS the read.
+   ========================================================================== */
+table.rank {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+table.rank thead { display: table-header-group; }
+table.rank th {
+  background: var(--table-header);
+  color: var(--ink);          /* matrix header row = black bold on aqua */
+  font-size: var(--fs-th);
+  font-weight: 700;
+  text-align: left;
+  padding: var(--pad-cell);
+  vertical-align: middle;
+  border: 1px solid var(--rule);
+}
+table.rank td {
+  font-size: var(--fs-td);
+  padding: var(--pad-cell);
+  border: 1px solid var(--rule);
+  vertical-align: middle;
+}
+table.rank tbody tr:nth-child(even) td { background: var(--zebra); }
+table.rank tbody tr { break-inside: avoid; page-break-inside: avoid; }
+table.rank tbody tr.is-winner td { background: var(--green-tint); font-weight: 700; }
+.rank-num { text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.rank-overall { text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ============================================================================
+   RUNNERS-UP NOTE — quiet supporting paragraph
+   ========================================================================== */
+.runners-up { margin-top: 8px; font-size: var(--fs-body); color: var(--muted); }
+
+/* ============================================================================
+   CAVEATS PANEL — light-cyan ground + matrix-cyan left rule (mirrors the
+   scorecard's Disclosures panel treatment, scaled for the brief).
+   ========================================================================== */
+.caveats-panel {
+  background: var(--amber-soft);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--gold);   /* matrix-cyan accent stripe — matches scorecard */
+  border-radius: 3px;
+  padding: 12px 18px 14px;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.caveats-panel ul { margin: 0; padding-left: 18px; }
+.caveats-panel li { font-size: var(--fs-body); margin-bottom: 5px; color: var(--ink); }
+.caveats-panel li:last-child { margin-bottom: 0; }
+
+/* ============================================================================
+   BOTTOM LINE — emphasized closing line
+   ========================================================================== */
+.bottom-line {
+  margin-top: 22px;
+  padding: 12px 0 0;
+  border-top: 2px solid var(--navy);   /* cyan keyline — the matrix's "total" cue closes the memo */
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--ink);
+  break-inside: avoid; page-break-inside: avoid;
+}
+.bottom-line .bl-label {
+  font-weight: 700;
+  color: var(--navy-deep);
+}
+
+/* ============================================================================
+   FOOTER — IDENTICAL attribution treatment to the scorecard
+   ========================================================================== */
+.footer-note {
+  margin-top: 22px;
+  font-size: var(--fs-small);
+  color: var(--muted);
+  border-top: 1px solid var(--rule);
+  padding-top: 7px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- ========================== HEADER BAND ================================= -->
+<!--
+  WORDMARK SLOT — the REAL FALKE white-knockout logo, embedded as a base64 data
+  URI so the rendered PDF is fully self-contained. This is byte-for-byte the same
+  asset the scorecard uses (source: _brand-ref/FALKE-logo-white.b64.txt) — the
+  two documents share one logo. To re-export, swap the data URI in the src below.
+-->
+<div class="header-band">
+  <img class="falke-wordmark" src="data:image/png;base64,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" alt="FALKE" />
+  <h1 class="title">Scorecard Summary — {{ project_name }}</h1>
+  <div class="subtitle">Plain-English summary of the bid evaluation</div>
+</div>
+<div class="accent-rule"></div>
+
+<div class="doc">
+
+<!-- ================= RECOMMENDATION / WINNER (hero callout) =============== -->
+<div class="callout">
+  <p class="eyebrow">Recommendation</p>
+  <div class="winner-name">{{ winner_name }}</div>
+  <p class="winner-rationale">{{ winner_rationale }}</p>
+</div>
+
+<!-- ===================== RANKING AT A GLANCE (compact) ==================== -->
+<div class="section">
+  <h2 class="section-title">Ranking at a glance</h2>
+  <table class="rank">
+    <colgroup>
+      <col style="width:12%"><col style="width:50%"><col style="width:23%"><col style="width:15%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th class="rank-num">Rank</th>
+        <th>Bidder</th>
+        <th>Tier</th>
+        <th class="rank-overall">Overall /100</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:ranked_bidder -->
+      {% for b in ranked_bidders %}
+      <tr{% if b.rank == 1 or b.rank == "1" %} class="is-winner"{% endif %}>
+        <td class="rank-num">{{ b.rank }}</td>
+        <td>{{ b.name }}</td>
+        <td>{{ b.tier }}</td>
+        <td class="rank-overall">{{ b.overall }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:ranked_bidder -->
+    </tbody>
+  </table>
+  <p class="runners-up">{{ runners_up_note }}</p>
+</div>
+
+<!-- ===================== HOW TO READ THIS (methodology) =================== -->
+<div class="section">
+  <h2 class="section-title">How to read this</h2>
+  <p>{{ methodology_plain }}</p>
+</div>
+
+<!-- ========================= IMPORTANT CAVEATS =========================== -->
+<div class="section">
+  <h2 class="section-title">Important caveats</h2>
+  <div class="caveats-panel">
+    <ul>
+      <!-- REPEAT:caveat -->
+      {% for c in caveats %}<li>{{ c }}</li>{% endfor %}
+      <!-- /REPEAT:caveat -->
+    </ul>
+  </div>
+</div>
+
+<!-- ============================= BOTTOM LINE ============================== -->
+<div class="bottom-line">
+  <span class="bl-label">Bottom line:</span> {{ bottom_line }}
+</div>
+
+<!-- ============================== FOOTER ================================= -->
+<!--
+  FOOTER — IDENTICAL attribution treatment to the scorecard: Falke framing is
+  fixed; footer_note (date/project/provenance) renders between the two
+  attributions; ARA credit is intentionally restrained.
+-->
+<div class="footer-note">
+  <strong>Prepared by FALKE Atlantic Corporation</strong> &middot; Owner's Representative{% if footer_note %} &middot; {{ footer_note }}{% endif %} &middot; <em>powered by an ARA-built tool</em>
+</div>
+
+</div>
+
+</body>
+</html>

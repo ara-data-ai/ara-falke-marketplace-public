@@ -1,0 +1,5 @@
+{
+  "_comment": "TEMPLATE — display-name aliases (Marvin §1.5), OPTIONAL. Pass with --aliases. Maps the full legal firm name carried in the bid matrix to the short name shown on the board scorecard. Keys match on the normalized raw/display name (firm-suffix drift like '...Inc.'/'...Builders' is tolerated); the raw matrix name is ALWAYS retained in the run log for audit. Default = no rename. Replace the placeholders; delete this whole file's use if no aliasing is needed.",
+  "<Full Legal Firm Name 1>": "<Short Display Name 1>",
+  "<Full Legal Firm Name 2>": "<Short Display Name 2>"
+}

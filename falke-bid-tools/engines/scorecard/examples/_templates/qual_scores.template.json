@@ -1,0 +1,19 @@
+{
+  "_comment": "TEMPLATE — per-bidder qualitative category OVERRIDES (the human-input checkpoint). Pass with --overrides. Keys are the DISPLAYED bidder name (after any --aliases is applied). For each bidder supply any of the 8 categories: pricing, scope, condo_exp, co_risk, reputation, financial, controls, docs. 'score' is 1-10, 'by' = who set it (analyst/LLM/source), 'note' = evidence. Pricing + CO-Risk are mechanically seeded by the skill; the four external categories (condo_exp, reputation, financial, controls) start null + 'ANALYST INPUT REQUIRED' and are NEVER invented — supply them here. 100% coverage across all scored bidders is required before the Overall presentation curve can be applied. Replace the placeholder bidders below.",
+  "<Bidder display name 1>": {
+    "pricing":    {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "scope":      {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "condo_exp":  {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "co_risk":    {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "reputation": {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "financial":  {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "controls":   {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "docs":       {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"}
+  },
+  "<Bidder display name 2>": {
+    "condo_exp":  {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "reputation": {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "financial":  {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"},
+    "controls":   {"score": 0, "by": "<analyst|llm|source>", "note": "<evidence>"}
+  }
+}

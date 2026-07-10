@@ -1,0 +1,73 @@
+{
+  "_comment": "SYNTHETIC sample-card published Section-E 1-10 category scores for the 7 SCORED bidders, encoded as human overrides so qualitative coverage reaches 100% and the Overall presentation curve (Darvish) can be applied. Category order: [pricing, scope, condo_exp, co_risk, reputation, financial, controls, docs]. Synthetic Overall (curve ON): Acme 84, Borealis 82, Cascade 75, Dorne 69, Crest 65, Fjord 56, Granite 51. NOTE: Cascade is the documented bespoke Value-Tier outlier (Darvish modeling-spec 2.5) — its 75 is a +5 manual tier_bonus, not produced by the curve from its wavg. All firms/figures are fictional; 'by' = synthetic sample scorecard.",
+  "Acme": {
+    "pricing":    {"score": 9, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 9, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 8, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Borealis": {
+    "pricing":    {"score": 9, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 9, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 8, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Cascade": {
+    "pricing":    {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 7, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Dorne": {
+    "pricing":    {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 5, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Crest": {
+    "pricing":    {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 9, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 8, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 7, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 7, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Fjord": {
+    "pricing":    {"score": 4, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 5, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 3, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 6, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 5, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 6, "by": "sample-card", "note": "synthetic Section-E"}
+  },
+  "Granite": {
+    "pricing":    {"score": 3, "by": "sample-card", "note": "synthetic Section-E"},
+    "scope":      {"score": 5, "by": "sample-card", "note": "synthetic Section-E"},
+    "condo_exp":  {"score": 4, "by": "sample-card", "note": "synthetic Section-E"},
+    "co_risk":    {"score": 2, "by": "sample-card", "note": "synthetic Section-E"},
+    "reputation": {"score": 5, "by": "sample-card", "note": "synthetic Section-E"},
+    "financial":  {"score": 5, "by": "sample-card", "note": "synthetic Section-E"},
+    "controls":   {"score": 4, "by": "sample-card", "note": "synthetic Section-E"},
+    "docs":       {"score": 5, "by": "sample-card", "note": "synthetic Section-E"}
+  }
+}

@@ -1,0 +1,5 @@
+# Runtime dependency: the official MCP Python SDK (FastMCP + stdio transport).
+# Tests for COND-2/5/6/7 run WITHOUT this installed (the COND-2 tool-surface
+# test skips cleanly if the SDK is absent; the source-level COND-2 checks and
+# all of COND-5/6/7 are stdlib-only).
+mcp>=1.2.0

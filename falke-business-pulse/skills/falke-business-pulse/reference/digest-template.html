@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<!-- ============================================================================
+     FALKE CoS — MORNING PULSE · digest appearance template
+     Designed by ARA · Falke brand (orange #F15022 + the real FALKE logo).
+     Established Falke chrome, matched to the bid-scorecard: orange header band
+     (#F15022 → #C7491A gradient), white-knockout FALKE wordmark left, charcoal
+     #1A2A33 as the structural dark, generous white space, strict hierarchy.
+
+     PURPOSE — this is the *appearance* the skill renders every morning for the
+     one-page business pulse (SKILL.md Step 3). It is a TEMPLATE the skill fills,
+     not a one-off mockup. The skill computes the same three categories + calendar
+     + tasks it already computes; here they get a Falke-branded, scannable layout
+     with WAITING-ON-A-CONTACT as the visual headline.
+
+     HOW THE SKILL RENDERS THIS (Step 3):
+       1. Build the digest content as it already does (three categories, days-
+          waiting numbers, calendar, dropbox, tasks) — content/structure is fixed.
+       2. Fill the {{...}} slots below (Jinja2 or plain string substitution — the
+          loop blocks are also wrapped in <!-- REPEAT:name -->...<!-- /REPEAT:name -->
+          markers so a non-templated string-builder can clone rows).
+       3. Render to HTML for the on-screen / saved one-pager. (The Teams post is a
+          SEPARATE, fixed Adaptive Card — see reference/teams-card.md.)
+
+     SAFETY (COND-1): every {{...}} slot is bounded DATA — summarized content only.
+     The structure is fixed; injected content can only ever land inside a slot,
+     never restructure the page, add links/buttons, or change anything. No raw
+     URLs from scanned content are rendered as clickable links here.
+
+     The FALKE wordmark below is the REAL white-knockout logo asset
+     (_brand-ref/FALKE-logo-white.png), embedded base64 so the page is fully
+     self-contained (no external asset, prints/exports cleanly).
+     ========================================================================= -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FALKE CoS — Morning Pulse — {{date}}</title>
+<style>
+  /* ---- FALKE brand tokens (single source of truth) ----------------------- */
+  :root {
+    /* Brand core — real FALKE palette (matched to the scorecard) */
+    --falke-orange:      #F15022;  /* BRAND ORANGE — header band, accent rule, headline accents */
+    --falke-orange-deep: #C7491A;  /* deep orange — header gradient bottom edge */
+    --falke-charcoal:    #1A2A33;  /* structural dark — category bars, headings, body */
+    --ink:               #1A2A33;  /* body text */
+    --muted:             #5E6E76;  /* sub-labels, meta, footer */
+
+    /* Surfaces */
+    --paper:        #FFFFFF;
+    --card-bg:      #FFFFFF;
+    --tint:         #FBF4F1;  /* faint warm orange wash for the headline section */
+    --chip-bg:      #F4F6F7;
+    --chip-border:  #D7DDE5;
+    --rule:         #E3E8EC;  /* hairline borders */
+    --header-text:  #FFFFFF;
+    --warm-white:   #FCE3D8;  /* legible near-white on the orange band */
+
+    /* Status accents — functional, read at a glance */
+    --blocked-bg:   #FBE3DB;  --blocked-fg:  #C7491A;  /* BLOCKED / overdue badge (orange family) */
+    --waiting-bg:   #F4F6F7;  --waiting-fg:  #5E6E76;  /* days-waiting badge (neutral) */
+    --high-bg:      #F8D7DA;  --high-fg:     #A12A36;  /* high-priority / verify accent */
+    --ok-fg:        #1F6B2E;  /* "all clear" affirmative */
+
+    /* Type — geometric display (echoes the FALKE wordmark) + humanist body */
+    --display: "Montserrat", "Helvetica Neue", Arial, "Liberation Sans", sans-serif;
+    --body:    "Inter", "Source Sans 3", "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #EEF1F3;
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    max-width: 760px;
+    margin: 24px auto;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 14px rgba(26,42,51,0.08);
+  }
+
+  /* ---- HEADER BAND — orange gradient, white FALKE logo left ---------------- */
+  .header-band {
+    background: linear-gradient(180deg, var(--falke-orange) 0%, var(--falke-orange-deep) 100%);
+    color: var(--header-text);
+    padding: 18px 24px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .header-left { display: flex; align-items: center; gap: 16px; }
+  .falke-wordmark { display: block; height: 30px; width: auto; user-select: none; }
+  .header-title { line-height: 1.15; }
+  .header-title .eyebrow {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--warm-white);
+  }
+  .header-title .h1 {
+    font-family: var(--display);
+    font-weight: 800;
+    font-size: 19px;
+    letter-spacing: 0.2px;
+    margin-top: 2px;
+  }
+  .header-date {
+    text-align: right;
+    font-size: 12px;
+    color: var(--warm-white);
+    line-height: 1.3;
+    white-space: nowrap;
+  }
+  .accent-rule { height: 4px; background: var(--falke-orange); width: 100%; }
+
+  /* ---- BODY -------------------------------------------------------------- */
+  .body { padding: 22px 24px 8px; }
+
+  /* TL;DR — the single most important thing today */
+  .tldr {
+    display: flex; gap: 12px; align-items: flex-start;
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--falke-orange);
+    background: var(--tint);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 24px;
+  }
+  .tldr .label {
+    font-family: var(--display); font-weight: 800; font-size: 11px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--falke-orange-deep);
+    white-space: nowrap; padding-top: 1px;
+  }
+  .tldr .text { font-size: 14px; color: var(--ink); }
+
+  /* Category block — numbered charcoal bar header + items */
+  .category { margin-bottom: 22px; }
+  .cat-head {
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 2px solid var(--falke-charcoal);
+    padding-bottom: 6px; margin-bottom: 12px;
+  }
+  .cat-num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--falke-charcoal); color: #fff;
+    font-family: var(--display); font-weight: 800; font-size: 12px;
+  }
+  .cat-title {
+    font-family: var(--display); font-weight: 800; font-size: 14px;
+    letter-spacing: 0.02em; color: var(--falke-charcoal); text-transform: uppercase;
+  }
+  .cat-count { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+  /* HEADLINE treatment for category ② (waiting-on-a-contact) */
+  .category.headline .cat-head { border-bottom-color: var(--falke-orange); }
+  .category.headline .cat-num  { background: var(--falke-orange); }
+  .category.headline .cat-title { color: var(--falke-orange-deep); }
+
+  /* Item rows */
+  .item {
+    display: flex; gap: 12px; align-items: baseline;
+    padding: 8px 0; border-bottom: 1px solid var(--rule);
+  }
+  .item:last-child { border-bottom: none; }
+  .item .meta { flex: 1; }
+  .item .contact { font-weight: 700; color: var(--ink); }
+  .item .subject { color: var(--ink); }
+  .item .ask { display: block; color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+
+  /* Badges */
+  .badge {
+    display: inline-block; font-family: var(--display); font-weight: 700;
+    font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 11px; white-space: nowrap; line-height: 1.4;
+  }
+  .badge.days   { background: var(--waiting-bg); color: var(--waiting-fg); border: 1px solid var(--chip-border); }
+  .badge.blocked{ background: var(--blocked-bg); color: var(--blocked-fg); }
+  .badge.high   { background: var(--high-bg);    color: var(--high-fg); }
+
+  /* Two-column lower grid: calendar + dropbox/tasks */
+  .grid { display: flex; gap: 24px; margin-top: 4px; }
+  .grid > .col { flex: 1; min-width: 0; }
+  .subhead {
+    font-family: var(--display); font-weight: 800; font-size: 11px;
+    letter-spacing: 0.10em; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--rule); padding-bottom: 5px; margin-bottom: 9px;
+  }
+  .line { padding: 5px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+  .line:last-child { border-bottom: none; }
+  .line .when { font-weight: 700; color: var(--falke-charcoal); margin-right: 6px; }
+  ul.tasks { list-style: none; margin: 0; padding: 0; }
+  ul.tasks li {
+    position: relative; padding: 5px 0 5px 18px; font-size: 13px;
+    border-bottom: 1px solid var(--rule);
+  }
+  ul.tasks li:last-child { border-bottom: none; }
+  ul.tasks li::before {
+    content: ""; position: absolute; left: 0; top: 11px;
+    width: 7px; height: 7px; border-radius: 2px; background: var(--falke-orange);
+  }
+
+  .empty { color: var(--muted); font-style: italic; padding: 6px 0; }
+
+  /* Drafts + appendix note */
+  .note {
+    margin-top: 18px; font-size: 12.5px; color: var(--muted);
+    background: var(--chip-bg); border: 1px solid var(--chip-border);
+    border-radius: 6px; padding: 10px 12px;
+  }
+  .note strong { color: var(--ink); }
+
+  /* ---- FOOTER ------------------------------------------------------------ */
+  .footer {
+    border-top: 1px solid var(--rule);
+    padding: 12px 24px 16px;
+    font-size: 11px; color: var(--muted);
+    display: flex; justify-content: space-between; gap: 12px;
+  }
+  .footer .auto { font-weight: 700; color: var(--falke-orange-deep); }
+
+  @media print {
+    body { background: #fff; }
+    .page { box-shadow: none; border: none; margin: 0; max-width: none; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- HEADER BAND -->
+    <div class="header-band">
+      <div class="header-left">
+        <img class="falke-wordmark"
+             src="data:image/png;base64,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"
+             alt="FALKE" />
+        <div class="header-title">
+          <div class="eyebrow">Chief of Staff</div>
+          <div class="h1">Morning Pulse</div>
+        </div>
+      </div>
+      <div class="header-date">{{date}}<br /><span style="opacity:.8">automated daily brief</span></div>
+    </div>
+    <div class="accent-rule"></div>
+
+    <div class="body">
+
+      <!-- TL;DR -->
+      <div class="tldr">
+        <span class="label">Today</span>
+        <span class="text">{{tldr}}</span>
+      </div>
+
+      <!-- HEADLINE: ② WAITING ON A CONTACT (time-sensitive) — given the most weight -->
+      <div class="category headline">
+        <div class="cat-head">
+          <span class="cat-num">2</span>
+          <span class="cat-title">Waiting on a contact</span>
+          <span class="cat-count">{{waiting_count}} open · time-sensitive first</span>
+        </div>
+        <!-- REPEAT:waiting_item -->
+        <div class="item">
+          <div class="meta">
+            <span class="contact">{{w.contact}}</span> — <span class="subject">{{w.subject}}</span>
+            <span class="ask">{{w.note}}</span>
+          </div>
+          <!-- w.blocked is rendered as a BLOCKED badge; always show the days-waiting badge -->
+          {{#w.blocked}}<span class="badge blocked">Blocked · {{w.reason}}</span>{{/w.blocked}}
+          <span class="badge days">{{w.days_waiting}}d waiting</span>
+        </div>
+        <!-- /REPEAT:waiting_item -->
+        <!-- when empty: --> <!-- <div class="empty">Nothing outstanding — no one owes you a reply.</div> -->
+      </div>
+
+      <!-- ① NEEDS YOUR RESPONSE -->
+      <div class="category">
+        <div class="cat-head">
+          <span class="cat-num">1</span>
+          <span class="cat-title">Needs your response</span>
+          <span class="cat-count">{{needs_count}} owed</span>
+        </div>
+        <!-- REPEAT:needs_item -->
+        <div class="item">
+          <div class="meta">
+            <span class="contact">{{n.contact}}</span> — <span class="subject">{{n.subject}}</span>
+            <span class="ask">{{n.ask}}</span>
+          </div>
+          <span class="badge days">in {{n.age}}</span>
+        </div>
+        <!-- /REPEAT:needs_item -->
+        <!-- when empty: --> <!-- <div class="empty">Inbox clear — nothing waiting on your reply.</div> -->
+      </div>
+
+      <!-- ③ HIGH-PRIORITY (incl. suspicious-to-verify) -->
+      <div class="category">
+        <div class="cat-head">
+          <span class="cat-num">3</span>
+          <span class="cat-title">High-priority</span>
+          <span class="cat-count">{{high_count}} flagged</span>
+        </div>
+        <!-- REPEAT:high_item -->
+        <div class="item">
+          <div class="meta">
+            <span class="contact">{{h.source}}</span> — <span class="subject">{{h.subject}}</span>
+            <span class="ask">{{h.why}}</span>
+          </div>
+          <span class="badge high">{{h.tag}}</span>
+        </div>
+        <!-- /REPEAT:high_item -->
+        <!-- when empty: --> <!-- <div class="empty">No escalations or red flags.</div> -->
+      </div>
+
+      <!-- CALENDAR + TASKS -->
+      <div class="grid">
+        <div class="col">
+          <div class="subhead">Today &amp; this week</div>
+          <!-- REPEAT:cal_item -->
+          <div class="line"><span class="when">{{c.when}}</span>{{c.title}}</div>
+          <!-- /REPEAT:cal_item -->
+          <!-- when empty: --> <!-- <div class="empty">No meetings today.</div> -->
+
+          <div class="subhead" style="margin-top:16px;">Dropbox — surfaced today</div>
+          <!-- REPEAT:dropbox_item -->
+          <div class="line">{{d.text}}</div>
+          <!-- /REPEAT:dropbox_item -->
+          <!-- when empty: --> <!-- <div class="empty">Nothing new in the project folder.</div> -->
+        </div>
+
+        <div class="col">
+          <div class="subhead">What you need to do today</div>
+          <ul class="tasks">
+            <!-- REPEAT:task_item -->
+            <li>{{t.text}}</li>
+            <!-- /REPEAT:task_item -->
+          </ul>
+        </div>
+      </div>
+
+      <!-- DRAFTS + any unavailable source (appendix) -->
+      <div class="note">
+        <strong>{{draft_count}} nudge draft(s)</strong> waiting in your Drafts folder
+        {{drafts_to}} — review and send each yourself.{{appendix}}
+      </div>
+
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+      <span><span class="auto">Automated Falke CoS digest</span> · drafts never sent automatically · one Teams channel</span>
+      <span>powered by an ARA-built tool</span>
+    </div>
+
+  </div>
+</body>
+</html>

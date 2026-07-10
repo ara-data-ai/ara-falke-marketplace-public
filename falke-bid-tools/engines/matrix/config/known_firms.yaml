@@ -1,0 +1,32 @@
+# known_firms.yaml — recurring-firm quirk library (PUBLIC SCAFFOLD)
+# -----------------------------------------------------------------
+# This shipped file is a SCHEMA SCAFFOLD ONLY. It intentionally contains NO real
+# firm names, match-terms, or project names. The single firm below is SYNTHETIC
+# and INERT (example: true) — it documents the format but NEVER participates in
+# matching, so it can never fire against a real bid.
+#
+# Real recurring-firm quirks live in a LOCAL, GITIGNORED overlay,
+# `config/known_firms.local.yaml`, distributed to authorized machines out of
+# band and merged over this scaffold at load time (local firms add to / override
+# by firm_id). With NO overlay present, every firm is "unmatched" — the SAFE
+# default: no reclassification, no firm profile, lossless canonical codes, and
+# anything uncertain flagged RED per the M5 no-silent-mislevel control.
+#
+# MATCHING (C3): a bidder matches a firm entry iff ANY of its `match` terms is a
+# case-insensitive SUBSTRING of the extracted contractor_name. If a name matches
+# MORE THAN ONE (non-example) firm, the engine emits RED KNOWN_FIRM_AMBIGUOUS and
+# applies NO reclass and NO firm-selected profile (no first-wins). Signature-based
+# code-format detection (§1) is name-independent and runs regardless.
+
+firms:
+  - firm_id: example_restoration
+    example: true                     # INERT: documents schema; never matched (§1.4)
+    match: ["examplecontractor"]      # synthetic; never appears in a real bid
+    # --- shows a destructive reclassification rule ---
+    reclassifications:
+      - rule_id: EXAMPLE_DUMPSTER
+        from: "DIV 11 00 00"
+        to:   "DIV 01 00 00"
+        when_description_contains_all: ["dumpster"]
+    # --- and shows a code-format profile selection ---
+    code_format_profile: csi_1995_2digit

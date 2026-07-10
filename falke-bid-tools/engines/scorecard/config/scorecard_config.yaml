@@ -1,0 +1,194 @@
+# =============================================================================
+# Falke Bid-Scorecard — tunable parameter block (single source of truth)
+# =============================================================================
+# EVERY modeled coefficient lives here, not inline in code (Darvish modeling
+# spec §0 + §4). Edit here to retune; the code reads these values and never
+# hard-codes a fitted constant.
+#
+# CLASSIFICATION (Marvin logic-spec legend):
+#   MECHANICAL = computed from matrix cells.
+#   PARAMETER  = external input the user must supply each run (NOT in matrix).
+#   JUDGMENT   = rubric / LLM / qualitative.
+#
+# The two HARD-STOP parameters (sf_basis, baseline band) have NO defaults that
+# would let the run proceed silently. They MUST be supplied each run. The shipped
+# `run_inputs` block below is BLANK (all null) on purpose — this is a per-project
+# template, NOT a single-project one-off. The synthetic sample validation values
+# live in examples/sample_run.yaml (and the test conftest), never in the shipped
+# default.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# RUN INPUTS — PARAMETER, must be supplied each run (Marvin §3, §2; Darvish §1.1)
+# SHIPPED BLANK (null) so EVERY project is FORCED to supply its own values via
+# the CLI flags (--sf-basis / --band-low / --band-high / --mid) or its own config
+# file. With these null the loader raises MissingParameterError and the run STOPS
+# with a clear "you must supply ..." message (no matrix-GSF fallback, no crash).
+# Copy examples/sample_run.yaml (or your own) and pass it with --config, OR pass
+# the four values on the command line. Do NOT fill these in the shipped default.
+# -----------------------------------------------------------------------------
+run_inputs:
+  # $/SF basis — PARAMETER. NEVER default to matrix Row 10 GSF. (Marvin §3)
+  sf_basis: null
+
+  # Modeled baseline band ($M) — PARAMETER, external takeoff. (Marvin §2)
+  modeled_mid_takeoff: null   # Section A direct+OH&P rounded; drives Section B tiers (Marvin §4)
+  band_low: null
+  band_high: null
+
+  # Canonical Section C variance reference ($M) — band center. Reproduces the
+  # printed variance column exactly (Darvish §1.1). If null at load, the code
+  # derives the center = (band_low + band_high)/2. Leave null unless a project
+  # needs a non-center reference.
+  variance_mid: null
+
+  # PRESENTATION labels — NOT modeled values, NOT hard-stop. These only change
+  # the wording of the cost-band chip and the Section A baseline title; the math
+  # is untouched. Shipped null so they fall back to project-agnostic defaults:
+  #   region       -> "South FL"           (cost-band chip + Section A title)
+  #   region_full  -> "South Florida"      (Section A title; defaults to region
+  #                                         when only region is supplied)
+  #   pricing_year -> current year         (Section A title; NEVER hardcoded)
+  # Override per project here, or via --region / --region-full / --baseline-year.
+  region: null
+  region_full: null
+  pricing_year: null
+
+# -----------------------------------------------------------------------------
+# SECTION B — tier thresholds (Marvin §4.1). MECHANICAL once band is set.
+# Cuts expressed as fractions of the band so they move with the band parameter.
+# -----------------------------------------------------------------------------
+tiers:
+  mid_floor_frac_of_band_low: 0.90    # MID floor = 0.90 * band_low_per_sf  (=> ~165.6)
+  premium_floor_frac_of_band_high: 1.20  # PREMIUM floor = 1.20 * band_high_per_sf (=> 234)
+  # TOP TIER = within [band_low_per_sf, band_high_per_sf]
+  # DEFENSIVE = (band_high_per_sf, premium_floor)
+
+# -----------------------------------------------------------------------------
+# SECTION C — volatility model (Darvish §1.3). Asymmetric clamped-affine in v.
+# v = (bid - variance_mid) / variance_mid  (signed fractional variance).
+# -----------------------------------------------------------------------------
+volatility:
+  v0: 6.0               # % at exactly baseline (v=0)
+  slope_under: 0.72     # %-pts per %-pt UNDER baseline
+  slope_over: 0.115     # %-pts per %-pt OVER baseline (gentle; preserves ordering)
+  floor: 2.0            # min volatility %
+  cap: 35.0             # max volatility %
+  half_width_min: 1.5   # display band half-width floor (%)
+  half_width_frac: 0.18 # display band half-width = max(min, frac * central)
+
+# -----------------------------------------------------------------------------
+# SECTION C — expected-final-cost drift model (Darvish §1.4).
+# expected = bid + creep*bid + lambda * max(0, target - bid); target=mid*(1+buffer)
+# -----------------------------------------------------------------------------
+drift:
+  creep: 0.030          # universal allowance creep (fraction of bid)
+  buffer: 0.05          # upward buffer on reversion target above variance_mid
+  lambda0: 0.43         # base reversion fraction at baseline
+  lambda_slope: 0.19    # added reversion per unit fraction under baseline
+  lambda_max: 0.55      # cap on reversion fraction
+  lambda_over: 0.0      # reversion when over baseline (~none; prepaid risk)
+  band_k: 0.5           # exp-final display band = vol% * headroom * band_k
+  band_floor: 0.05      # $M minimum display band half-extent
+
+# -----------------------------------------------------------------------------
+# OVERALL /100 presentation curve (Darvish §2). OPT-IN, LABELED, gated on 100%
+# qualitative coverage. Default = OFF (ship honest weighted average).
+# Overall = anchor + k * (wavg - anchor) - penalty
+# -----------------------------------------------------------------------------
+overall_curve:
+  apply_curve: false    # DEFAULT: honest weighted average is the primary number
+  anchor: 70            # crossover where delta ~ 0 (the defensive-tier anchor)
+  k_low: 0.62           # floor-up strength below anchor
+  k_high: 1.18          # mild upward stretch above anchor
+  pen_coef: 0.39        # pts per $/SF above premium_floor (premium-tier fit)
+  premium_floor: 234    # $/SF deadband; DEFENSIVE bidders not penalized
+  tier_bonus: {}        # optional per-bidder manual promotion (e.g. {"Cascade": 5}); default empty, logged
+
+# -----------------------------------------------------------------------------
+# SCORING WEIGHTS — Marvin §6, static config. Must sum to 1.0.
+# -----------------------------------------------------------------------------
+weights:
+  pricing: 0.25
+  scope: 0.15
+  condo_exp: 0.15
+  co_risk: 0.15
+  reputation: 0.10
+  financial: 0.10
+  controls: 0.05
+  docs: 0.05
+
+# -----------------------------------------------------------------------------
+# PRICING category 1-10 anchors (Marvin §7.3). MECHANICAL from tier.
+# -----------------------------------------------------------------------------
+pricing_scores:
+  top: 9          # within band
+  mid: 8          # modestly below (MID)
+  defensive: 7    # above band moderately (DEFENSIVE)
+  premium: 6      # far above (PREMIUM) — value-penalized
+  risk_low: 4     # far below upper edge (HIGH RISK, less extreme)
+  risk_floor: 3   # far below extreme
+
+# -----------------------------------------------------------------------------
+# CO-RISK mechanical seed map from volatility % (Darvish §3.3). Higher=lower risk.
+# -----------------------------------------------------------------------------
+co_risk_seed:
+  - {max_vol: 5.0,  score: 9}
+  - {max_vol: 8.0,  score: 8}
+  - {max_vol: 15.0, score: 6}   # 10-15
+  - {max_vol: 30.0, score: 3}   # 20-30
+  - {max_vol: 999.0, score: 2}  # >30
+
+# -----------------------------------------------------------------------------
+# SECTION E overall-cell color cuts (Anna style-spec §3). Parameterized.
+# -----------------------------------------------------------------------------
+score_color_cuts:
+  high_min: 75    # >=75 green
+  low_max: 60     # <60 red ; else neutral
+
+# -----------------------------------------------------------------------------
+# COMPLETENESS / QA
+# -----------------------------------------------------------------------------
+qa:
+  # Marvin §1.4: flag a block missing CSI divisions that >= N peers populate.
+  completeness_peer_fraction: 0.5   # "peer-median" style: populated by >= this share of peers
+  # Marvin §2.2 fingerprint test: flag supplied baseline line within this % of any bidder subtotal.
+  fingerprint_tolerance_pct: 0.2
+
+# -----------------------------------------------------------------------------
+# LLM rubric (Darvish §3). Scaffold only; live call is an integration point.
+# -----------------------------------------------------------------------------
+llm:
+  temperature: 0.2
+  seed: 42
+  require_evidence_for_score: true   # absent evidence -> null, NEVER invented
+
+# -----------------------------------------------------------------------------
+# MATRIX PARSE — generic detection knobs (Marvin §0/§1). Labels are matched
+# case/space-insensitively; rows/cols are DETECTED, not hard-coded.
+# -----------------------------------------------------------------------------
+matrix:
+  sheet_name: null                       # null = use first/only sheet
+  header_row_hint: null                  # null = auto-detect bidder-name row
+  block_subheaders: ["COST", "COST SUBTOTALS", "$/SF", "$/SF SUBTOTALS"]
+  grand_total_label: "GRAND TOTAL CONSTRUCTION COST"
+  construction_subtotal_label: "CONSTRUCTION COST SUBTOTAL"  # NEVER used as compared total
+  gsf_label: "TOTAL GSF"                 # detected & reported, but NEVER used for $/SF
+  duplicate_keep: "first"                # keep left-most on duplicate firm name
+
+# -----------------------------------------------------------------------------
+# DISPLAY-NAME ALIASES (Marvin §1.5) — optional, DEFAULT EMPTY.
+# Map a raw/normalized matrix firm name to the short name shown on the board
+# scorecard. The raw matrix name is ALWAYS retained in the run log for audit;
+# only the DISPLAYED name (and the name overrides/tier_bonus key off) changes.
+# Duplicate detection is unaffected (it keys off the raw normalized name).
+# Caller-supplied --aliases / aliases= merges OVER this block (caller wins).
+# Example (synthetic sample board card):
+#   "Acme Restoration": "Acme"
+#   "Granite Remodel Group": "Granite"
+#   "Harbor Builders Inc.": "Harbor"
+#   "Borealis Builders Solutions": "Borealis"
+# (A dotted acronym like 'C.R.E.S.T' -> CREST is already handled by display_name
+# normalization.)
+# -----------------------------------------------------------------------------
+aliases: {}

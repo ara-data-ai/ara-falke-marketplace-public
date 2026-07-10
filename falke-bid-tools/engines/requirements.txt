@@ -1,0 +1,30 @@
+# falke-bid-tools — union runtime dependencies for BOTH bundled engines.
+#
+# Bootstrapped ONCE into ${CLAUDE_PLUGIN_DATA}/venv by scripts/bootstrap.sh
+# (SessionStart hook). Pin exact versions in CI before a production ship.
+#
+# Live-grounding note (verified 2026-05-30): lower bounds chosen for the local
+# interpreter (Python 3.9.6). Confirm the Python version in the Cowork sandbox
+# and the latest stable versions before pinning higher.
+
+# --- matrix engine (engines/matrix/src) ---
+pydantic>=2.0           # BidDocument validation (Pydantic v2)
+
+# --- shared / scorecard engine (engines/scorecard/scorecard) ---
+openpyxl>=3.1           # xlsx read (matrix write + scorecard matrix parse)
+PyYAML>=6.0             # scorecard config block
+Jinja2>=3.1             # scorecard HTML render (Anna's template)
+numpy>=1.24             # scorecard curve re-fit (--refit only)
+scipy>=1.10             # scorecard curve re-fit (--refit only)
+
+# --- PDF rendering (scorecard) ---
+# DEFAULT engine = headless Chromium via Playwright. After pip install, the
+# browser binary is installed by bootstrap.sh via `playwright install chromium`.
+# If the Chromium install fails in the sandbox, bootstrap.sh stamps HTML-only
+# mode and the scorecard run falls back to --html-only (see bootstrap.sh).
+playwright>=1.40
+
+# NOTE: pdfplumber / PyMuPDF (fitz) are intentionally NOT here. The matrix
+# extraction reads PDFs with Claude's Read tool / vision, not a Python parser.
+# The original skill's pre-flight import check for those libs is stale and must
+# be removed during de-pathing (see the Christine handoff note, item M-7).

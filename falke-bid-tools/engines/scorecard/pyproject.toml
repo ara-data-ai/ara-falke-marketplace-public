@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falke-bid-scorecard"
+version = "1.0.0"
+description = "Regenerate the Falke bid-comparison scorecard from an xlsx matrix."
+requires-python = ">=3.9"
+dependencies = [
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+    "Jinja2>=3.1",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+weasyprint = ["WeasyPrint>=60"]
+chromium = ["playwright>=1.40"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+falke-scorecard = "scorecard.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scorecard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,7 @@
+{
+  "_comment": "SYNTHETIC sample display-name aliases (Marvin 1.5). Maps the full legal firm name carried in the bid matrix to the short name shown on the board scorecard. Keys match on the normalized raw/display name (firm-suffix drift tolerated); the raw matrix name is ALWAYS retained in the run log for audit. A dotted acronym like 'C.R.E.S.T' -> CREST is handled by display_name normalization, so it is NOT listed here. All firms are fictional. Pass with --aliases examples/sample_aliases.json.",
+  "Acme Restoration": "Acme",
+  "Granite Remodel Group": "Granite",
+  "Harbor Builders Inc.": "Harbor",
+  "Borealis Builders Solutions": "Borealis"
+}

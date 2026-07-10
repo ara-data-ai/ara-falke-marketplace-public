@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/apple-mail/server.py"],
+      "env": {
+        "APPLE_MAIL_READ_ALLOWED_ACCOUNTS": "falkecorp.com,falkehoa.com",
+        "APPLE_MAIL_DRAFT_ALLOWED_DOMAINS": "falkecorp.com",
+        "APPLE_MAIL_DRAFT_FROM_ACCOUNTS": "falkecorp.com,falkehoa.com"
+      }
+    }
+  }
+}

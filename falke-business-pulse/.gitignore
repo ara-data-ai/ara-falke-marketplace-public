@@ -1,0 +1,19 @@
+# Falke business-pulse plugin — shipped-bundle hygiene
+# ----------------------------------------------------
+# Keep the shipped plugin free of runtime state, run-logs, and Python build
+# artifacts. The persistent venv lives under ${CLAUDE_PLUGIN_DATA} at runtime
+# (never in the repo); the MCP server writes JSONL run-logs under
+# ~/Library/Logs at runtime (never in the repo).
+
+# Python build / cache artifacts
+__pycache__/
+.pytest_cache/
+*.pyc
+venv/
+.venv/
+
+# MCP server run-logs (created at runtime under the user's home, never shipped)
+*.jsonl
+
+# Per-person run-state (created at runtime in the project folder)
+state/

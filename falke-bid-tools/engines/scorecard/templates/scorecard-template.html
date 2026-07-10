@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{ project_name }} — Bid Scorecard</title>
+
+<!--
+{#
+================================================================================
+ FALKE CORP · BID-COMPARISON SCORECARD — DATA-POPULATABLE TEMPLATE
+ Designed by Anna (ARA Digital & Brand Design) for engineering hand-off (Christine).
+ Reproduces the "Presentation-Enhanced Takeoff + Bid Comparison + Scoring &
+ Rankings" board scorecard (South Florida restoration board format).
+================================================================================
+
+ HOW TO RENDER
+ -------------
+ This is a single self-contained HTML file (CSS embedded, no external assets,
+ system fonts only). Populate the {{ tokens }} / loops below, then render to PDF.
+
+ RECOMMENDED ENGINE: headless Chromium (Playwright / Puppeteer) OR WeasyPrint.
+   - Both honor the print primitives used here: @page size+margins,
+     `break-inside: avoid`, and `thead { display: table-header-group }`
+     (repeats table headers on every page when a long table breaks).
+   - Page size is set to LANDSCAPE LETTER (11in x 8.5in) to match the wide
+     source layout. Change @page `size` if a different stock is required.
+   - Chromium: launch headless, page.pdf({ printBackground: true,
+     preferCSSPageSize: true }). printBackground MUST be true — all the
+     color-coding (aqua headers, cyan total bands, tier chips, score cells)
+     is background color.
+   - WeasyPrint: backgrounds print by default; no extra flag needed.
+
+ TEMPLATING CONVENTION
+ ---------------------
+ This file uses JINJA2 syntax ({{ var }} for values, {% for %} for loops,
+ {% if %} for conditionals). Render with Python's Jinja2:
+
+     from jinja2 import Template
+     html = Template(open("scorecard-template.html").read()).render(**context)
+
+ If you do NOT want a real template engine, every loop is ALSO bracketed by
+ HTML comment markers:  <!-- REPEAT:rowname --> ... <!-- /REPEAT:rowname -->
+ so a plain-Python string builder can clone the block between the markers.
+ Pick ONE approach; do not mix. (Jinja2 is recommended and is what the
+ {{ }}/{% %} below assume.)
+
+================================================================================
+ CONTEXT OBJECT — every variable Christine must supply
+================================================================================
+
+ project_name           str   e.g. "SAMPLE TOWER · Lobby Renovation"
+ subtitle               str   e.g. "Presentation-Enhanced Takeoff + Bid
+                              Comparison + Scoring & Rankings (no data changes)"
+
+ # ---- Top summary strip (3 chips) ----
+ cost_band_label        str   chip 1 title, e.g. "Modeled Cost Band (Takeoff + South FL trade pricing)"
+ cost_band_value        str   e.g. "$3.35M – $3.55M"
+ top_tier_label         str   chip 2 title, e.g. "Top Tier (Takeoff-aligned)"
+ top_tier_value         str   e.g. "1) Acme 2) Borealis"
+ value_tier_label       str   chip 3 title, e.g. "Value Tier"
+ value_tier_value       str   e.g. "3) Cascade (moderate savings, higher volatility)"
+
+ # ---- SECTION A — Modeled Cost Baseline ----
+ section_a_title        str   e.g. "A. Takeoff-Based Modeled Cost Baseline (South Florida, 2026)"
+ baseline_rows          list[ {scope, basis, cost} ]   the nine (or N) trade lines
+ baseline_subtotals     list[ {scope, basis, cost} ]   subtotal / OH&P lines (rendered as emphasized rows)
+ baseline_band          {scope, basis, cost}           the final highlighted "MODELED PROJECT COST BAND" row
+
+ # ---- SECTION B — Bid Totals Normalized ----
+ section_b_title        str   e.g. "B. Falke Matrix – Bid Totals Normalized ($/SF uses 16,000 SF)"
+ bid_rows               list[ {bidder, total, per_sf, tier_label, tier_class, quick_read} ]
+                              ordered as in the source (worst → best $/SF, i.e. as supplied)
+                              tier_class ∈ TIER COLOR CLASSES (see below)
+
+ # ---- SECTION C — Probability-Adjusted Outcome ----
+ section_c_title        str   e.g. "C. Probability-Adjusted Outcome (Expected Final Cost + Volatility Band)"
+ outcome_rows           list[ {bidder, bid, variance, expected, volatility, interpretation, row_class} ]
+                              row_class: "" for normal, "row-best" for the top green-tinted rows
+
+ # ---- SECTION D — Scoring Framework ----
+ section_d_title        str   e.g. "D. Scoring Framework (Categories and Weights)"
+ framework_rows         list[ {category, weight, captures} ]
+
+ # ---- SECTION E — Detailed Category Scores ----
+ section_e_title        str   e.g. "E. Detailed Category Scores (1–10 scale; weights shown in header)"
+ score_columns          list[ {name, weight} ]   the 8 weighted category headers, e.g. {"name":"Pricing","weight":"25%"}
+ score_rows             list[ {firm, scores:[...], overall, overall_class} ]
+                              scores is a list aligned 1:1 with score_columns (the 1–10 values)
+                              overall is the /100 number; overall_class ∈ SCORE COLOR CLASSES
+
+ # ---- SECTION F — Contractor Summaries ----
+ section_f_title        str   e.g. "F. Contractor Summaries (Strengths vs Risk Flags)"
+ contractor_summaries   list[ {name, rank, strengths:[...], risks:[...]} ]
+                              ordered by rank ascending (Rank #1 first)
+
+ # ---- SECTION G — Final Hierarchy ----
+ section_g_title        str   e.g. "G. Final Hierarchy (Takeoff-Validated)"
+ hierarchy_items        list[ {n, name, top3} ]   ordered 1..N; top3=True for the bold amber-outlined leaders
+
+ # ---- SECTION H — Disclosures & Data Notes (board-facing material disclosures) ----
+ disclosures_title      str   e.g. "H. Disclosures & Data Notes"
+ disclosures            dict  data-driven; the section + each sub-note render only when populated:
+                              .any          bool — render the section at all
+                              .completeness list[ {name, divisions} ]   bidders outside the CSI-division band
+                              .div_band_low / .div_band_high  int        the expected division band (audit C8)
+                              .duplicates   list[ {name, kept_total, dropped_total, delta} ]
+                              .fingerprints list[ {bidder, baseline_label, bidder_label, pct_delta} ]
+                              .provisional  list[ {name, coverage} ]     bidders scored below full coverage
+
+ # ---- footer / provenance (optional but recommended for board docs) ----
+ footer_note            str   e.g. "Falke Corp · prepared by ARA · 2026-05-22 · base/grand-total construction cost only"
+
+
+================================================================================
+ COLOR-CODING CONTRACT — Christine maps logic-spec output → these CSS classes
+================================================================================
+
+ TIER COLOR CLASSES (Section B `tier_class`)  — driven by §4.1 of the logic spec
+   "tier-top"        GREEN   TOP TIER (aligned)        — $/SF within band
+   "tier-mid"        AMBER   MID (aggressive)          — modestly below band
+   "tier-defensive"  AMBER   DEFENSIVE (above baseline)— above band, moderate
+   "tier-premium"    AMBER   PREMIUM (far above)       — far above band
+   "tier-risk"       RED     HIGH RISK (under baseline)— far below band
+   (MID / DEFENSIVE / PREMIUM all share the amber chip per the source PDF; the
+    *label text* differentiates them. Only TOP=green and HIGH RISK=red differ.)
+
+ SCORE COLOR CLASSES (Section E `overall_class`) — driven by the Overall /100
+   "score-high"   GREEN   strong overall   (source: ~76+, e.g. 86/82/76)
+   "score-mid"    NEUTRAL  middle overall   (source: ~60–75, e.g. 70/64 — plain cell)
+   "score-low"    RED     weak overall      (source: ~<60, e.g. 58/48)
+   RECOMMENDED CUTS (parameterize, do not hard-code per-firm):
+     score-high >= 75 ; score-low < 60 ; else score-mid.
+   These reproduce the source card; expose as parameters so Falke can tune.
+
+ OUTCOME ROW CLASS (Section C `row_class`)
+   "row-best"   light-green tint for the top-ranked rows (e.g. tints Acme & Borealis).
+   ""           normal zebra row.
+================================================================================
+#}
+-->
+
+<style>
+/* ============================================================================
+   DESIGN TOKENS — FALKE MATRIX-ALIGNED SCHEME v2
+   Palette + type extracted from Falke's own bid-comparison matrix xlsx
+   (Bid_Form sheet) so the scorecard reads as a SIBLING of the document the
+   boards already know: aqua #A3EAF3 header/subtotal bands (black bold text),
+   process-cyan #00A9CA total bands (white bold text), gray grid hairlines,
+   Avenir type. Orange is DEMOTED to a thin accent rule (logo tie-in) after
+   client feedback ("too much orange"). See
+   _brand-ref/matrix-aligned-scheme.md for the extraction + rationale.
+   BRAND chrome only — functional tier/score colors UNCHANGED.
+   Token NAMES are kept stable; only their VALUES are re-pointed.
+   ========================================================================== */
+:root {
+  /* Brand core — Falke matrix palette */
+  --navy:        #00A9CA;  /* MATRIX CYAN — header band + grand-total band rows (matrix total color) */
+  --navy-deep:   #007A93;  /* deep cyan — section titles, name accents (WCAG-safe on white) */
+  --steel:       #007A93;  /* secondary deep cyan (reserved) */
+  --table-header:#A3EAF3;  /* MATRIX AQUA — table header rows + subtotal bands (ink bold text, as in the matrix) */
+  --gold:        #00A9CA;  /* cyan structural keylines + accent stripes */
+  --ink:         #1A2A33;  /* body text — near-black (matrix body is black Avenir) */
+  --muted:       #5E6E76;  /* secondary / sub-label text */
+  --teal:        #007A93;  /* sparing secondary accent */
+  --orange:      #F15022;  /* FALKE logo orange — RESTRAINED: thin accent rule only */
+
+  /* Surfaces */
+  --paper:       #FFFFFF;
+  --chip-bg:     #F0F7FA;  /* summary chips, hierarchy bar — faint aqua-gray */
+  --chip-border: #C9D8DE;
+  --zebra:       #F4FAFC;  /* alternating table row — faint aqua tint */
+  --rule:        #BFC9CD;  /* hairline borders — gray grid, echoes matrix #808080 lightened for 8pt density */
+  --header-text: #FFFFFF;  /* white knockout — on cyan band + cyan total rows */
+
+  /* Tier / score semantic colors — FUNCTIONAL, DO NOT CHANGE
+     (board reads these; readability > brand) */
+  --green-bg:    #D8EFD9;  --green-fg:   #1F6B2E;  /* TOP TIER / strengths / high score */
+  --green-tint:  #EAF6EB;  /* faint row tint (Section C best rows) */
+  --amber-bg:    #FCEFC2;  --amber-fg:   #8A6314;  /* MID / DEFENSIVE / PREMIUM tier chips */
+  --amber-soft:  #E8F6FA;  /* light-cyan panel ground (Disclosures) — family of matrix aqua */
+  --red-bg:      #F8D7DA;  --red-fg:     #A12A36;  /* HIGH RISK / risk flags / low score */
+
+  /* Type scale (pt for print fidelity) */
+  --fs-title:    24pt;
+  --fs-subtitle: 8.5pt;
+  --fs-section:  12pt;
+  --fs-chip-lbl: 8pt;
+  --fs-chip-val: 9.5pt;
+  --fs-th:       7.5pt;
+  --fs-td:       8pt;
+  --fs-small:    7pt;
+
+  /* Spacing */
+  --gap:         16px;
+  --pad-cell:    5px 8px;
+}
+
+/* ---- Page / print setup ---------------------------------------------------*/
+@page {
+  size: 11in 8.5in;            /* Landscape Letter — matches source wide layout */
+  margin: 0.5in 0.55in 0.55in 0.55in;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  /* FALKE BODY stack — AVENIR, the face of Falke's own bid-comparison matrix
+     (Avenir Book 10–12pt throughout the Bid_Form sheet). Avenir Next / Avenir
+     are macOS system fonts (the render environment); web-safe fallbacks keep
+     the PDF self-contained with no @font-face. */
+  font-family: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  font-size: var(--fs-td);
+  line-height: 1.35;
+  -webkit-print-color-adjust: exact;   /* force backgrounds in Chromium */
+  print-color-adjust: exact;
+}
+/* FALKE DISPLAY treatment — SAME Avenir family, bold. The matrix does not
+   switch faces for headings; it bolds Avenir (header row, subtotal + total
+   rows are Avenir bold). Mirroring that keeps the two documents siblings.
+   The wordmark itself is the embedded PNG. */
+.header-band .title,
+.section-title,
+.contractor .name {
+  font-family: "Avenir Next", "Avenir", "Segoe UI", "Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif;
+  font-weight: 700;
+}
+
+/* ============================================================================
+   HEADER BAND — FALKE wordmark (left) · project title (center) · subtitle (right)
+   ========================================================================== */
+.header-band {
+  background: var(--navy);   /* flat matrix cyan — the matrix is flat-filled, no gradients */
+  color: var(--header-text);
+  padding: 18px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.header-band .title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  margin: 0;
+  white-space: nowrap;
+  flex: 1;                    /* center column expands; wordmark + subtitle pin sides */
+  text-align: center;
+}
+.header-band .subtitle {
+  font-size: var(--fs-subtitle);
+  font-weight: 400;
+  text-align: right;
+  color: #D9F2F8;            /* cool near-white tint — legible on the cyan band */
+  max-width: 320px;
+  line-height: 1.3;
+}
+.accent-rule {                /* thin ORANGE rule under the band — the ONE restrained orange
+                                 element kept (ties the doc to the orange FALKE logo) */
+  height: 3px;
+  background: var(--orange);
+  width: 100%;
+}
+/* ---- FALKE wordmark — the REAL logo asset, embedded base64 (self-contained) --
+   White-knockout wordmark directly on the cyan band: the art is a pure-white
+   recolor of the FALKE wordmark on a transparent ground, so it reads crisply
+   against the cyan header with no plate. Left-anchored, vertically centered,
+   ~38px tall. To re-export, swap the data URI in the <img src> below. */
+.falke-wordmark {
+  display: block;
+  height: 38px;
+  width: auto;
+  user-select: none;
+}
+
+/* ============================================================================
+   TOP SUMMARY STRIP — three light-gray chips
+   ========================================================================== */
+.summary-strip {
+  display: flex;
+  gap: var(--gap);
+  margin: 16px 0 6px;
+}
+.chip {
+  flex: 1;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: 3px;
+  padding: 9px 12px;
+}
+.chip .chip-label { font-size: var(--fs-chip-lbl); font-weight: 700; color: var(--ink); }
+.chip .chip-value { font-size: var(--fs-chip-val); color: var(--muted); margin-top: 3px; }
+
+/* ============================================================================
+   SECTIONS / HEADINGS
+   ========================================================================== */
+.section { margin-top: 18px; }
+.section-title {
+  font-size: var(--fs-section);
+  font-weight: 700;
+  color: var(--navy-deep);   /* deep cyan — aqua is a band color, too light for text */
+  margin: 0 0 8px;
+}
+/* Keep a heading attached to the first chunk of its content. */
+.section-title { break-after: avoid; page-break-after: avoid; }
+
+/* ============================================================================
+   TABLES (shared) — matrix-aqua header row (ink bold text, as in the Falke
+   matrix's column-header row), zebra body, gray grid hairlines
+   ========================================================================== */
+table.sc {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;            /* predictable column widths in print */
+}
+table.sc thead { display: table-header-group; }  /* repeat header on page breaks */
+table.sc th {
+  background: var(--table-header);
+  color: var(--ink);          /* matrix header row = black bold on aqua */
+  font-size: var(--fs-th);
+  font-weight: 700;
+  text-align: left;
+  padding: var(--pad-cell);
+  vertical-align: middle;
+  border: 1px solid var(--rule);
+}
+table.sc td {
+  font-size: var(--fs-td);
+  padding: var(--pad-cell);
+  border: 1px solid var(--rule);
+  vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+table.sc tbody tr:nth-child(even) td { background: var(--zebra); }
+table.sc tbody tr { break-inside: avoid; page-break-inside: avoid; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.center { text-align: center; }
+
+/* Section A emphasized rows — straight from the matrix's own hierarchy:
+   subtotal rows = aqua band (black bold), the culminating COST BAND row =
+   process-cyan band with white bold text (the matrix's GRAND TOTAL treatment) */
+tr.subtotal td { font-weight: 700; background: var(--table-header) !important; }
+tr.band td     { font-weight: 700; background: var(--navy) !important;
+                 color: var(--header-text);
+                 border-top: 2px solid var(--navy-deep); }
+
+/* ============================================================================
+   TIER CHIP (Section B "Tier / highlight" cell)
+   ========================================================================== */
+.tier {
+  display: inline-block;
+  font-weight: 700;
+  font-size: var(--fs-td);
+  padding: 2px 7px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.tier-top       { background: var(--green-bg); color: var(--green-fg); }
+.tier-mid       { background: var(--amber-bg); color: var(--amber-fg); }
+.tier-defensive { background: var(--amber-bg); color: var(--amber-fg); }
+.tier-premium   { background: var(--amber-bg); color: var(--amber-fg); }
+.tier-risk      { background: var(--red-bg);   color: var(--red-fg);   }
+
+/* ============================================================================
+   SECTION C — best-row tint
+   ========================================================================== */
+table.sc tbody tr.row-best td { background: var(--green-tint) !important; }
+
+/* ============================================================================
+   SECTION E — Overall /100 color-coded cell
+   ========================================================================== */
+td.score-cell { text-align: center; font-weight: 700; }
+td.score-cell.score-high { background: var(--green-bg) !important; color: var(--green-fg); }
+td.score-cell.score-mid  { /* neutral — inherits zebra/white */ color: var(--ink); }
+td.score-cell.score-low  { background: var(--red-bg) !important;  color: var(--red-fg); }
+table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
+
+/* ============================================================================
+   SECTION F — Contractor summary blocks
+   ========================================================================== */
+.contractor { margin-top: 14px; break-inside: avoid; page-break-inside: avoid; }
+.contractor .name {
+  font-style: italic;
+  font-weight: 700;
+  color: var(--navy-deep);   /* deep cyan — band cyan is too light for small text on white */
+  font-size: 9.5pt;
+  margin-bottom: 5px;
+}
+.contractor .split { display: flex; gap: 0; border: 1px solid var(--rule); }
+.contractor .pane { flex: 1; padding: 8px 11px; }
+.contractor .pane.strengths { background: var(--green-bg); border-right: 1px solid var(--rule); }
+.contractor .pane.risks     { background: var(--red-bg); }
+.contractor .pane h4 {
+  margin: 0 0 4px; font-size: var(--fs-th); font-weight: 700; text-transform: none;
+}
+.contractor .pane.strengths h4 { color: var(--green-fg); }
+.contractor .pane.risks h4     { color: var(--red-fg); }
+.contractor .pane ul { margin: 0; padding-left: 14px; }
+.contractor .pane li { font-size: var(--fs-td); margin-bottom: 2px; }
+
+/* ============================================================================
+   SECTION G — Final hierarchy bar
+   ========================================================================== */
+.hierarchy-bar {
+  background: var(--chip-bg);
+  border: 1px solid var(--gold);
+  border-radius: 3px;
+  padding: 12px 16px;
+  font-size: 10pt;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.hierarchy-bar .item { white-space: nowrap; margin-right: 4px; }
+.hierarchy-bar .top3 { font-weight: 700; color: var(--navy-deep); }
+
+/* ============================================================================
+   SECTION H — Disclosures & Data Notes
+   ========================================================================== */
+.disclosures {
+  background: var(--amber-soft);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--gold);   /* matrix-cyan accent stripe */
+  border-radius: 3px;
+  padding: 11px 16px 13px;
+  break-inside: avoid; page-break-inside: avoid;
+}
+.disclosures .note { margin-top: 9px; }
+.disclosures .note:first-child { margin-top: 0; }
+.disclosures .note h4 {
+  margin: 0 0 3px; font-size: var(--fs-th); font-weight: 700;
+  color: var(--navy-deep); text-transform: none;
+}
+.disclosures .note p { margin: 0; font-size: var(--fs-td); color: var(--ink); }
+.disclosures .note ul { margin: 2px 0 0; padding-left: 16px; }
+.disclosures .note li { font-size: var(--fs-td); margin-bottom: 1px; color: var(--ink); }
+
+/* ============================================================================
+   FOOTER
+   ========================================================================== */
+.footer-note {
+  margin-top: 18px;
+  font-size: var(--fs-small);
+  color: var(--muted);
+  border-top: 1px solid var(--rule);
+  padding-top: 6px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- ========================== HEADER BAND ================================= -->
+<!--
+  WORDMARK SLOT — the REAL FALKE logo (white-knockout recolor), embedded as a
+  base64 data URI so the rendered PDF is fully self-contained (no external
+  asset at render time). Source: _brand-ref/FALKE-logo-white.png — white
+  knockout on the CYAN band (the orange original would vibrate against cyan).
+  Left-anchored, ~38px tall in the header band. To re-export, swap the data
+  URI in the src below; nothing else needs to move.
+-->
+<div class="header-band">
+  <img class="falke-wordmark" src="data:image/png;base64,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" alt="FALKE" />
+  <h1 class="title">{{ project_name }}</h1>
+  <div class="subtitle">{{ subtitle }}</div>
+</div>
+<div class="accent-rule"></div>
+
+<!-- ===================== TOP SUMMARY STRIP (3 chips) ===================== -->
+<div class="summary-strip">
+  <div class="chip">
+    <div class="chip-label">{{ cost_band_label }}</div>
+    <div class="chip-value">{{ cost_band_value }}</div>
+  </div>
+  <div class="chip">
+    <div class="chip-label">{{ top_tier_label }}</div>
+    <div class="chip-value">{{ top_tier_value }}</div>
+  </div>
+  <div class="chip">
+    <div class="chip-label">{{ value_tier_label }}</div>
+    <div class="chip-value">{{ value_tier_value }}</div>
+  </div>
+</div>
+
+<!-- ===================== SECTION A — Modeled Baseline ==================== -->
+<div class="section">
+  <h2 class="section-title">{{ section_a_title }}</h2>
+  <table class="sc">
+    <colgroup>
+      <col style="width:30%"><col style="width:53%"><col style="width:17%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Trade scope (modeled from drawings)</th>
+        <th>Assumption basis</th>
+        <th class="num">Mid-point cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:baseline_row -->
+      {% for r in baseline_rows %}
+      <tr>
+        <td>{{ r.scope }}</td>
+        <td>{{ r.basis }}</td>
+        <td class="num">{{ r.cost }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:baseline_row -->
+
+      <!-- REPEAT:baseline_subtotal (subtotal + OH&P emphasized rows) -->
+      {% for r in baseline_subtotals %}
+      <tr class="subtotal">
+        <td>{{ r.scope }}</td>
+        <td>{{ r.basis }}</td>
+        <td class="num">{{ r.cost }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:baseline_subtotal -->
+
+      <!-- the single highlighted MODELED PROJECT COST BAND row -->
+      <tr class="band">
+        <td>{{ baseline_band.scope }}</td>
+        <td>{{ baseline_band.basis }}</td>
+        <td class="num">{{ baseline_band.cost }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ================== SECTION B — Bid Totals Normalized ================== -->
+<div class="section">
+  <h2 class="section-title">{{ section_b_title }}</h2>
+  <table class="sc">
+    <colgroup>
+      <col style="width:14%"><col style="width:13%"><col style="width:9%">
+      <col style="width:22%"><col style="width:42%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Bidder</th>
+        <th class="num">Bid total</th>
+        <th class="num">$/SF</th>
+        <th>Tier / highlight</th>
+        <th>Quick read</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:bid_row -->
+      {% for b in bid_rows %}
+      <tr>
+        <td>{{ b.bidder }}</td>
+        <td class="num">{{ b.total }}</td>
+        <td class="num">{{ b.per_sf }}</td>
+        <td><span class="tier {{ b.tier_class }}">{{ b.tier_label }}</span></td>
+        <td>{{ b.quick_read }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:bid_row -->
+    </tbody>
+  </table>
+</div>
+
+<!-- =============== SECTION C — Probability-Adjusted Outcome ============== -->
+<div class="section">
+  <h2 class="section-title">{{ section_c_title }}</h2>
+  <table class="sc">
+    <colgroup>
+      <col style="width:13%"><col style="width:9%"><col style="width:22%">
+      <col style="width:16%"><col style="width:10%"><col style="width:30%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Bidder</th>
+        <th class="num">Bid</th>
+        <th>Variance vs modeled band</th>
+        <th>Expected final cost (modeled)</th>
+        <th>Volatility</th>
+        <th>Interpretation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:outcome_row -->
+      {% for o in outcome_rows %}
+      <tr class="{{ o.row_class }}">
+        <td>{{ o.bidder }}</td>
+        <td class="num">{{ o.bid }}</td>
+        <td>{{ o.variance }}</td>
+        <td>{{ o.expected }}</td>
+        <td>{{ o.volatility }}</td>
+        <td>{{ o.interpretation }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:outcome_row -->
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== SECTION D — Scoring Framework ==================== -->
+<div class="section">
+  <h2 class="section-title">{{ section_d_title }}</h2>
+  <table class="sc">
+    <colgroup>
+      <col style="width:28%"><col style="width:10%"><col style="width:62%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th class="center">Weight</th>
+        <th>What it captures (explicit)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:framework_row -->
+      {% for f in framework_rows %}
+      <tr>
+        <td>{{ f.category }}</td>
+        <td class="center">{{ f.weight }}</td>
+        <td>{{ f.captures }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:framework_row -->
+    </tbody>
+  </table>
+</div>
+
+<!-- ================= SECTION E — Detailed Category Scores ================ -->
+<div class="section">
+  <h2 class="section-title">{{ section_e_title }}</h2>
+  <table class="sc">
+    <thead>
+      <tr>
+        <th style="width:16%">Firm</th>
+        <!-- REPEAT:score_col_header -->
+        {% for c in score_columns %}
+        <th class="center">{{ c.name }}<br>({{ c.weight }})</th>
+        {% endfor %}
+        <!-- /REPEAT:score_col_header -->
+        <th class="center" style="width:9%">Overall /100</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- REPEAT:score_row -->
+      {% for s in score_rows %}
+      <tr>
+        <td>{{ s.firm }}</td>
+        <!-- REPEAT:score_cell (one per score_columns, aligned) -->
+        {% for v in s.scores %}
+        <td class="score-num">{{ v }}</td>
+        {% endfor %}
+        <!-- /REPEAT:score_cell -->
+        <td class="score-cell {{ s.overall_class }}">{{ s.overall }}</td>
+      </tr>
+      {% endfor %}
+      <!-- /REPEAT:score_row -->
+    </tbody>
+  </table>
+</div>
+
+<!-- ================= SECTION F — Contractor Summaries =================== -->
+<div class="section">
+  <h2 class="section-title">{{ section_f_title }}</h2>
+  <!-- REPEAT:contractor -->
+  {% for c in contractor_summaries %}
+  <div class="contractor">
+    <div class="name">{{ c.name }} (Rank #{{ c.rank }})</div>
+    <div class="split">
+      <div class="pane strengths">
+        <h4>Strengths</h4>
+        <ul>
+          <!-- REPEAT:strength -->
+          {% for s in c.strengths %}<li>{{ s }}</li>{% endfor %}
+          <!-- /REPEAT:strength -->
+        </ul>
+      </div>
+      <div class="pane risks">
+        <h4>Risk flags</h4>
+        <ul>
+          <!-- REPEAT:risk -->
+          {% for r in c.risks %}<li>{{ r }}</li>{% endfor %}
+          <!-- /REPEAT:risk -->
+        </ul>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  <!-- /REPEAT:contractor -->
+</div>
+
+<!-- ==================== SECTION G — Final Hierarchy ===================== -->
+<div class="section">
+  <h2 class="section-title">{{ section_g_title }}</h2>
+  <div class="hierarchy-bar">
+    <!-- REPEAT:hierarchy_item -->
+    {% for h in hierarchy_items %}<span class="item{% if h.top3 %} top3{% endif %}">{{ h.n }}) {{ h.name }}</span>{% if not loop.last %} &nbsp; {% endif %}{% endfor %}
+    <!-- /REPEAT:hierarchy_item -->
+  </div>
+</div>
+
+<!-- ==================== SECTION H — Disclosures & Data Notes ==============
+  Board-facing material disclosures the run produces. Driven by data: each note
+  renders only when it has items, and the whole section is skipped if there is
+  nothing to disclose. Plain board language — not internal flag text.
+-->
+{% if disclosures.any %}
+<div class="section">
+  <h2 class="section-title">{{ disclosures_title }}</h2>
+  <div class="disclosures">
+    {% if disclosures.completeness %}
+    <div class="note">
+      <h4>Bid completeness</h4>
+      <p>The following bidders populate fewer CSI cost divisions than the expected {{ disclosures.div_band_low }}–{{ disclosures.div_band_high }} range — read their low line items as possible scope gaps or exclusions, not savings:</p>
+      <ul>
+        {% for c in disclosures.completeness %}<li>{{ c.name }} ({{ c.divisions }} divisions)</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if disclosures.duplicates %}
+    <div class="note">
+      <h4>Duplicate submission</h4>
+      <ul>
+        {% for d in disclosures.duplicates %}<li>Two {{ d.name }} submissions exist: {{ d.kept_total }} used, {{ d.dropped_total }} set aside (differ {{ d.delta }}). Supersession vs. re-quote is not resolvable from the matrix — confirm with the bidder before any award.</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if disclosures.fingerprints %}
+    <div class="note">
+      <h4>Modeled-baseline coincidences</h4>
+      <p>{{ disclosures.fingerprints | length }} baseline line{{ 's' if disclosures.fingerprints | length != 1 else '' }} closely match a bidder subtotal, noted for transparency — the modeled baseline is ARA's independent estimate, not a bidder figure:</p>
+      <ul>
+        {% for f in disclosures.fingerprints %}<li>Baseline “{{ f.baseline_label }}” ≈ {{ f.bidder }} “{{ f.bidder_label }}” (within {{ f.pct_delta }}).</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if disclosures.provisional %}
+    <div class="note">
+      <h4>Provisional scores</h4>
+      <p>The Overall column is an honest weighted average; the presentation curve is withheld while qualitative coverage is partial. These bidders are scored provisionally — their rank position is provisional accordingly:</p>
+      <ul>
+        {% for p in disclosures.provisional %}<li>{{ p.name }} ({{ p.coverage }} qualitative coverage)</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ============================ FOOTER ================================== -->
+<!--
+  FOOTER — Falke attribution is fixed framing; footer_note (date, project,
+  scope provenance) renders between the two attributions. ARA credit is
+  intentionally restrained — the document is Falke's deliverable.
+-->
+<div class="footer-note">
+  <strong>Prepared by FALKE Atlantic Corporation</strong> &middot; Owner's Representative{% if footer_note %} &middot; {{ footer_note }}{% endif %} &middot; <em>powered by an ARA-built tool</em>
+</div>
+
+</body>
+</html>

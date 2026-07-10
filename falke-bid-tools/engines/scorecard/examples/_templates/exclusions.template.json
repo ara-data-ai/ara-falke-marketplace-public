@@ -1,0 +1,7 @@
+{
+  "_comment": "TEMPLATE — human bidder set-aside ruling (Marvin §1.4), OPTIONAL. Pass with --exclusions (merged with any --exclude CSV). The skill's DEFAULT is include-all-and-flag: it FLAGS completeness/duplicate outliers but NEVER auto-drops a non-duplicate bidder. This file is the explicit channel to APPLY a human ruling that removes named bidders from the SCORED field. Names match on the normalized name (display or raw; firm-suffix drift tolerated); each exclusion is LOGGED with a reason. A name that matches nothing is logged as a no-op (so a typo is visible). Replace the placeholders; omit the file entirely to score every bidder.",
+  "exclude": [
+    "<Firm to set aside 1>",
+    "<Firm to set aside 2>"
+  ]
+}

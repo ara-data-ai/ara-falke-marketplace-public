@@ -1,0 +1,41 @@
+# =============================================================================
+# SAMPLE CONDOMINIUM — validation run inputs (EXAMPLE ONLY, SYNTHETIC)
+# =============================================================================
+# These are the synthetic sample per-project PARAMETER values that mirror the
+# shape of the inputs BLANKED out of the shipped config/scorecard_config.yaml
+# (which ships null so every new project is forced to supply its own). They live
+# here as the reference VALIDATION example — they are NOT skill defaults, and all
+# figures are fictional.
+#
+# Two ways to supply per-project inputs (pick one):
+#
+#   A) CLI flags (recommended for a one-off run). Copy the values below into the
+#      command (this reproduces the synthetic sample card):
+#
+#        python3 -m scorecard.cli \
+#          --matrix "../Inputs/Sample Condominium - Bid Comparison Matrix.xlsx" \
+#          --project-name "Sample Condominium · Lobby Renovation" \
+#          --sf-basis 16000 --band-low 3.35 --band-high 3.55 --mid 3.40 \
+#          --baseline examples/sample_baseline.json \
+#          --qual-notes examples/sample_qual_notes.json \
+#          --aliases examples/sample_aliases.json \
+#          --out-dir ../Outputs --refit
+#
+#   B) Project config file. Copy the SHIPPED config/scorecard_config.yaml to a
+#      per-project file, paste the run_inputs values below into its run_inputs
+#      block (keeping all the model blocks intact), and pass it with
+#      --config <your-project-config>.yaml. Do NOT fill these into the shipped
+#      default config.
+# -----------------------------------------------------------------------------
+
+run_inputs:
+  sf_basis: 16000            # $/SF area basis (Marvin §3) — NOT the matrix GSF (12,000)
+  modeled_mid_takeoff: 3.40  # Section A modeled mid ($M); drives Section B tiers
+  band_low: 3.35             # modeled baseline band lower bound ($M)
+  band_high: 3.55            # modeled baseline band upper bound ($M)
+  variance_mid: 3.45         # Section C reference ($M) = band center (low+high)/2
+  # presentation labels (synthetic sample card; pricing_year pinned so the
+  # example reproduces a fixed year regardless of when it is run)
+  region: "South FL"         # cost-band chip + Section A title (short label)
+  region_full: "South Florida"  # Section A title (long label)
+  pricing_year: 2026         # Section A title baseline year

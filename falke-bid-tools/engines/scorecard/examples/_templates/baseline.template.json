@@ -1,0 +1,8 @@
+[
+  {"_comment": "TEMPLATE — Section A modeled cost baseline (PARAMETER, the estimator's takeoff). Copy this file, rename per project, and replace every line. The skill does NOT generate this from bidder numbers (circularity, Marvin §2.2). Each trade line: 'scope' (label), 'basis' (how the number was derived), 'cost' (DISPLAY string), and 'value' (NUMERIC — feeds the QA fingerprint test that flags a baseline line within <0.2% of any bidder subtotal). Mark subtotal/markup rows with \"kind\": \"subtotal\". Add/remove lines freely — the count is not fixed."},
+  {"scope": "<Trade line 1, e.g. Interior demolition>", "basis": "Modeled allowance", "cost": "$<display>", "value": 0},
+  {"scope": "<Trade line 2>", "basis": "Modeled allowance", "cost": "$<display>", "value": 0},
+  {"scope": "<Trade line N>", "basis": "Modeled allowance", "cost": "$<display>", "value": 0},
+  {"scope": "Direct trades subtotal", "basis": "Sum of trade lines", "cost": "$<display>", "value": 0, "kind": "subtotal"},
+  {"scope": "GC OH&P (modeled) <pct>%", "basis": "<pct>% x direct subtotal", "cost": "$<display>", "value": 0, "kind": "subtotal"}
+]
