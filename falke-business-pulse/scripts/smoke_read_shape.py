@@ -55,7 +55,7 @@ class _FakeDriver(ReadMailDriver):
     read_inbox returns (records, examined, boundary_in_window, total)."""
 
     def list_accounts(self):  # type: ignore[override]
-        return [MailAccount(name="ARA", email="derick@falkecorp.com")]
+        return [MailAccount(name="ARA", email="operator@falkecorp.com")]
 
     def read_inbox(self, account_name, cutoff):  # type: ignore[override]
         recs = [("client@falkecorp.com", "Subject", "2026-07-11 07:00:00", "body text")]
