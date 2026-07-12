@@ -1,37 +1,54 @@
 -- read_account.applescript
 --
--- COND-7 (AppleScript string-injection prevention) + bounded-delta read.
+-- COND-7 (AppleScript string-injection prevention) + bounded-delta read + CAP.
 --
--- This script is STATIC. The account name and the cutoff timestamp arrive at
--- runtime as elements of `argv` and are bound to variables — they are DATA to the
--- AppleScript runtime, never source. A value containing quotes, an ampersand
--- shell-call payload, a Mail verb word, backslashes, etc. is literal text and
--- cannot execute. (Same parameterized-query discipline as create_draft.applescript.)
+-- This script is STATIC. The account name, cutoff timestamp, and message ceiling
+-- arrive at runtime as elements of `argv` and are bound to variables — they are
+-- DATA to the AppleScript runtime, never source. A value containing quotes, an
+-- ampersand shell-call payload, a Mail verb word, backslashes, etc. is literal
+-- text and cannot execute. (Same parameterized-query discipline as create_draft.)
 --
 -- It reads ONLY the INBOX of ONE named, allow-listed account (the Python layer
--- has already filtered to allow-listed accounts before invoking this — COND-8),
--- and ONLY messages whose `date received` is AFTER the cutoff (bounded delta).
--- It does NOT enumerate every mailbox of every account — that is the ~500x-slower
--- pattern that can stall Mail; this is the bounded-delta design the memo requires.
+-- has already filtered to allow-listed accounts before invoking this — COND-8).
 --
--- READ-ONLY: the only Mail operations are property reads + a `whose` filter.
--- There is NO save / send / message deletion / move / set. (COND-2, read side.)
--- No shell is invoked (no `do shell script`).
+-- CAP (ADR docs/adr/0001 — fixes the ~90s timeout on years-large personal inboxes):
+-- instead of `messages whose date received > cutoff` — which walks the ENTIRE
+-- inbox (O(inbox)) and timed out at 90s — this examines the NEWEST min(total,
+-- ceiling) messages by index and returns every in-window message among them.
+--
+-- R-SAFE (ordering-INDEPENDENT completeness — Floyd's COND-5 remediation):
+--   * NO early stop. Every one of the examined messages is checked and every
+--     in-window one (date received > cutoff) is collected, REGARDLESS of order — so
+--     a single message moved/delivered out of order (recent index, old date) can no
+--     longer truncate the collection (the previous early-stop silently dropped
+--     in-window mail sitting behind such a message).
+--   * The SATURATION/COMPLETENESS DECISION is NOT made here — this script returns
+--     the in-window records plus the raw metadata Python needs (examined count,
+--     whether the OLDEST-BY-INDEX examined message is still in window, total count)
+--     and read_core (unit-tested Python) decides `saturated`.
+--   * SPEED: the newest range's dates are bulk-fetched in ONE osascript round-trip
+--     (`date received of messages lo thru hi`), not `ceiling` individual
+--     `message idx` accesses — bounded to O(ceiling) work, no O(inbox) `whose` walk.
+--     Full properties are fetched only for the (few) in-window messages.
+--
+-- READ-ONLY: the only Mail operations are property reads. There is NO save / send /
+-- delete / move / set. (COND-2, read side.) No shell is invoked.
 --
 -- argv contract (positional, all strings):
 --   item 1 : account name (exact, as returned by list_accounts.applescript)
 --   item 2 : cutoff as "YYYY-MM-DD HH:MM:SS" (space separator, not T)
+--   item 3 : ceiling — max messages to examine (integer as text)
 --
--- Output framing (control-character framed so untrusted bodies — which may carry
--- tabs, newlines, quotes, injection text — can NEVER break the record structure):
---   * fields within a record are separated by US  (ASCII 0x1F, "unit separator")
---   * records are separated by         GS  (ASCII 0x1D, "group separator")
---   * field order: sender US subject US date US body
--- Each field value has any US/GS/control bytes STRIPPED before framing, so a
--- crafted body cannot inject a separator. The Python side splits on GS then US.
--- A message whose body is empty/blank (cached / not-yet-downloaded) is emitted
--- with an EMPTY body field; Python detects that and skips+logs it (cached-body
--- integrity).
+-- Output framing:
+--   * FIRST a META line: `examined US boundary_in_window(0|1) US total`, terminated
+--     by the FIRST newline. Emitted BEFORE any record; message bodies (which may
+--     contain newlines) all appear AFTER it, so a crafted body cannot spoof it.
+--   * THEN the in-window message records: fields separated by US (0x1F), records by
+--     GS (0x1D), field order: sender US subject US date US body. Each field has
+--     US/GS/control bytes STRIPPED before framing, so a crafted body cannot inject a
+--     separator. Python splits on the FIRST newline (META vs records), then GS/US.
+-- A message whose body is empty/blank (cached / not-yet-downloaded) is emitted with
+-- an EMPTY body field; Python detects that and skips+logs it (cached-body integrity).
 
 on stripCtrl(theText)
 	-- Remove the framing/control bytes from a field so content can't break framing.
@@ -49,52 +66,107 @@ end stripCtrl
 on run argv
 	set acctName to item 1 of argv
 	set cutoffText to item 2 of argv
+	set ceilingText to item 3 of argv
 	set cutoffDate to (my parseISO(cutoffText))
+	set ceiling to (ceilingText as integer)
 
 	set us to (ASCII character 31)
 	set gs to (ASCII character 29)
 	set outRecords to {}
+	set examined to 0
+	set boundaryInWindow to false
+	set totalCount to 0
 
 	tell application "Mail"
 		-- Resolve the one named account. If it doesn't exist, error (Python treats
 		-- a nonzero exit / error as fail-loud).
 		set theAccount to (first account whose name is acctName)
 		-- The account's inbox only (bounded scope) — not every mailbox.
-		-- Provider-agnostic resolution: IMAP/Gmail name the inbox "INBOX";
-		-- Microsoft 365 / Exchange do NOT (e.g. "Inbox"). Try the IMAP name
-		-- first, then fall back to a case-insensitive match against THIS
-		-- account's own mailboxes. Fails loud (errors) if no inbox resolves.
 		set theInbox to (my resolveInbox(theAccount))
-		-- Bounded DELTA: only messages newer than the cutoff.
-		set newMsgs to (messages of theInbox whose date received > cutoffDate)
+		set totalCount to (count of messages of theInbox)
 
-		repeat with m in newMsgs
-			set theSender to ""
-			set theSubject to ""
-			set theDate to ""
-			set theBody to ""
-			try
-				set theSender to (sender of m) as text
-			end try
-			try
-				set theSubject to (subject of m) as text
-			end try
-			try
-				set theDate to ((date received of m) as text)
-			end try
-			try
-				set theBody to (content of m) as text
-			end try
+		if totalCount > 0 then
+			-- Newest-first index direction (endpoint comparison; positional reads).
+			set d1 to (date received of message 1 of theInbox)
+			set dN to (date received of message totalCount of theInbox)
+			set newestIsFirst to (not (d1 < dN))
 
-			set rec to (my stripCtrl(theSender)) & us & (my stripCtrl(theSubject)) & us & (my stripCtrl(theDate)) & us & (my stripCtrl(theBody))
-			set end of outRecords to rec
-		end repeat
+			-- Examine the NEWEST min(totalCount, ceiling) messages, as an index range.
+			set examineCount to totalCount
+			if examineCount > ceiling then set examineCount to ceiling
+			if newestIsFirst then
+				set lo to 1
+				set hi to examineCount
+			else
+				set lo to (totalCount - examineCount + 1)
+				set hi to totalCount
+			end if
+
+			-- Bulk-fetch the dates for the range in ONE round-trip (fast; NOT the
+			-- O(inbox) `whose` walk). item i of dList <-> inbox index (lo + i - 1).
+			set dList to (date received of messages lo thru hi of theInbox)
+			set nFetched to (count of dList)
+
+			repeat with i from 1 to nFetched
+				set examined to examined + 1
+				set mDate to item i of dList
+				if (mDate is missing value) or (mDate > cutoffDate) then
+					-- IN-WINDOW (undated emitted defensively — never silently dropped;
+					-- Python's cached-body integrity check handles blanks). Collect it
+					-- regardless of order. Fetch full props for THIS message only (the
+					-- in-window count is small for a delta), so we don't pull ~ceiling
+					-- bodies each run.
+					set idx to (lo + i - 1)
+					set m to message idx of theInbox
+					set theSender to ""
+					set theSubject to ""
+					set theDate to ""
+					set theBody to ""
+					try
+						set theSender to (sender of m) as text
+					end try
+					try
+						set theSubject to (subject of m) as text
+					end try
+					try
+						set theDate to ((date received of m) as text)
+					end try
+					try
+						set theBody to (content of m) as text
+					end try
+					set rec to (my stripCtrl(theSender)) & us & (my stripCtrl(theSubject)) & us & (my stripCtrl(theDate)) & us & (my stripCtrl(theBody))
+					set end of outRecords to rec
+				end if
+				-- No else / no early-stop: every examined message is checked, so an
+				-- interleaved out-of-window message cannot truncate the collection.
+			end repeat
+
+			-- BOUNDARY signal (Floyd's R-SAFE saturation rule): is the OLDEST-BY-INDEX
+			-- examined message (the far end of the examined range) STILL in window? If
+			-- so, the cutoff falls BEYOND what we examined, so in-window mail may sit
+			-- among the unexamined messages (Python flags CAPPED when total > examined).
+			-- Free — it's just the far end of the dList we already fetched. Undated =>
+			-- treated as in-window (conservative: flag rather than risk a silent miss).
+			if newestIsFirst then
+				set boundaryDate to (item nFetched of dList)
+			else
+				set boundaryDate to (item 1 of dList)
+			end if
+			set boundaryInWindow to ((boundaryDate is missing value) or (boundaryDate > cutoffDate))
+		end if
 	end tell
+
+	-- META: examined US boundary_in_window(0|1) US total. The completeness DECISION
+	-- (saturated = total > examined AND boundary_in_window) is made in read_core
+	-- (unit-tested Python), NOT here.
+	set biwField to "0"
+	if boundaryInWindow then set biwField to "1"
+	set metaLine to (examined as text) & us & biwField & us & (totalCount as text)
 
 	set AppleScript's text item delimiters to gs
 	set outText to outRecords as text
 	set AppleScript's text item delimiters to ""
-	return outText
+	return metaLine & (ASCII character 10) & outText
 end run
 
 -- Resolve the inbox of ONE account, provider-agnostically and within that

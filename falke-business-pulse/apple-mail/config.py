@@ -112,6 +112,17 @@ def run_log_path() -> str:
 # default (both domains); an explicitly-empty value falls through to read-nothing.
 DEFAULT_READ_ALLOWED_ACCOUNTS: tuple[str, ...] = ("falkecorp.com", "falkehoa.com")
 
+# Per-account read CEILING (the message-count cap; ported from ara-business-pulse
+# ADR 0001). The read script examines the inbox NEWEST-FIRST by index — the newest
+# min(total, ceiling) messages — instead of the O(inbox) `whose date received >
+# cutoff` walk that times out at 90s on years-large inboxes (Falke's Exchange
+# accounts carry years of history). Rationale for 500: a since-last-run (24h)
+# delta almost never exceeds 500 messages even on a busy business inbox, so a
+# clean day is never falsely flagged; and examining ~500 message headers stays
+# well under the 90s timeout. If a genuinely busier-than-500 window occurs, the
+# account is flagged CAPPED (surfaced, never silently truncated — COND-5).
+READ_MAX_MESSAGES_PER_ACCOUNT = 500
+
 # Bounds for the read path (untrusted-body hardening). Bodies longer than this are
 # truncated (and flagged) rather than pulled wholesale into context.
 MAX_READ_BODY_LEN = 200_000     # generous per-message body cap for the digest scan
@@ -146,3 +157,28 @@ def read_allowed_accounts() -> tuple[str, ...]:
 def read_run_log_path() -> str:
     """Return the read run-log path (env override or default)."""
     return os.environ.get("APPLE_MAIL_READ_RUN_LOG", DEFAULT_READ_RUN_LOG)
+
+
+# Machine-readable LAST-SCAN integrity marker (COND-5 structural backstop).
+# Written deterministically by the read core on every completed read — NOT by the
+# model/skill. The pulse viewer reads this marker and injects the partial-scan
+# banner into the served HTML BY CONSTRUCTION — so the human-facing warning does
+# not depend on the model/skill choosing to render it (a prompt-injection in a
+# surviving message cannot suppress it). Lives in the same local-config dir as
+# the viewer's config.json.
+DEFAULT_SCAN_STATUS_FILE = os.path.expanduser(
+    "~/.falke-business-pulse/last-scan-status.json"
+)
+SCAN_STATUS_BASENAME = "last-scan-status.json"
+
+
+def read_scan_status_path() -> str:
+    """Return the last-scan-status marker path — NON-overridable by design.
+
+    Returns the fixed dedicated file (no env override). The writer (read core) and
+    the reader (pulse-server, which hard-codes the IDENTICAL path) must resolve to
+    the SAME location or the partial-scan banner would silently stop working,
+    and an env-pointable marker write would be a clobber footgun. Kept as a
+    function so the writer has a single resolver.
+    """
+    return DEFAULT_SCAN_STATUS_FILE

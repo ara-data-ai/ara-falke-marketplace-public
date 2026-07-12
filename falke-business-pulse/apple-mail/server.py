@@ -1,4 +1,4 @@
-"""Apple Mail MCP server (Falke CoS Phase 2, Path A).
+"""Apple Mail MCP server (ARA CoS).
 
 Host-native local MCP server. Exposes EXACTLY TWO tools, both least-privilege:
   - `create_apple_mail_draft` — creates a draft in Apple Mail's Drafts folder
@@ -97,7 +97,7 @@ def create_apple_mail_draft(
 def read_apple_mail(
     since_iso: str,
     accounts: list[str] | None = None,
-) -> list[dict]:
+) -> dict:
     """Read NEW messages since a cutoff from ALLOW-LISTED Apple Mail accounts only.
 
     The read side of the CoS morning scan. READ-ONLY: it cannot send, draft,
@@ -112,13 +112,25 @@ def read_apple_mail(
         Any other account in Mail (e.g. a personal Gmail/iCloud) is skipped
         ENTIRELY — its inbox is never enumerated, zero messages are read. If the
         allow-list is empty/misconfigured the tool reads NOTHING (fail closed).
-      - It performs a BOUNDED DELTA scan: only the INBOX of each allow-listed
-        account, only messages newer than `since_iso`. It never enumerates every
-        mailbox of every account.
+      - It performs a BOUNDED DELTA scan: it examines the NEWEST min(total, CEILING)
+        messages of each allow-listed INBOX by index and returns every in-window one
+        (ordering-independent, no early stop) — O(ceiling), never the O(inbox) walk.
+        If there are more messages than it examined AND the oldest-by-index examined
+        message is still in-window (the window extends past the examined range), older
+        in-window mail may be unread: that account is named in `accounts_capped` and
+        the scan is `status: "partial"` (CAPPED — surfaced, never a silent
+        truncation). It never enumerates every mailbox.
       - A message with a blank/partial (not-yet-downloaded) body is skipped and
         logged, never returned as a blank.
-      - On timeout / Mail-not-running / osascript error it FAILS LOUD (raises) —
-        it never returns a partial scan as if it were complete.
+      - AVAILABILITY vs COND-5: ANY per-account read failure — a TIMEOUT or a
+        pre-timeout STALL (rc!=0, e.g. AppleEvent -1712) — degrades that ONE account
+        (it is skipped and the scan is marked `status: "partial"`) rather than
+        aborting the whole scan — but a partial scan is NEVER presented as a clean
+        one: `status` is `"partial"` and the skipped accounts are named in
+        `accounts_failed`, and the consumer MUST surface that prominently. SYSTEMIC
+        conditions still FAIL LOUD (raise): a failure at account ENUMERATION
+        (list_accounts — Mail not running / auth / osascript missing) and a TOTAL
+        wipeout (zero accounts returned).
 
     Args:
         since_iso: ISO-8601 cutoff (e.g. "2026-06-12T06:00:00"); only messages
@@ -127,8 +139,18 @@ def read_apple_mail(
                    can only ever INTERSECT the allow-list (narrow, never widen).
 
     Returns:
-        A list of {"account", "sender", "subject", "date", "body"} dicts, from
-        allow-listed accounts only.
+        {
+          "status": "ok" | "partial",
+          "messages": [ {"account","sender","subject","date","body"}, ... ],
+          "accounts_read": [names read successfully],
+          "accounts_failed": [ {"account","domain","reason"}, ... ],  # timed out/stalled
+          "accounts_capped": [ {"account","domain"}, ... ],  # ceiling hit; older
+                             #   in-window mail may be unread
+          "cutoff": "<normalized cutoff>",  # run token; stamp into the saved pulse
+        }
+        `status: "partial"` means one or more allow-listed accounts either failed
+        (timeout/stall) or were CAPPED this run — render that prominently; never as a
+        complete scan.
     """
     try:
         return _read_apple_mail(since_iso=since_iso, accounts=accounts)

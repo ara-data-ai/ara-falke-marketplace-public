@@ -19,6 +19,7 @@ Design constraints (see README + the security review):
 from __future__ import annotations
 
 import glob
+import html
 import json
 import os
 import re
@@ -33,6 +34,12 @@ HOST = "127.0.0.1"
 PORT = 8787
 CONFIG_PATH = os.path.expanduser("~/.falke-business-pulse/config.json")
 REFRESH_LOG = os.path.expanduser("~/Library/Logs/falke-pulse-server/refresh.log")
+# Last-scan integrity marker written by the apple-mail read core (read_core.py /
+# config.read_scan_status_path). COND-5 structural backstop: if the last read was
+# `status: "partial"`, the served HTML gets a prominent "incomplete scan" banner
+# injected HERE, by construction — so a prompt-injection in a surviving message
+# cannot suppress the human-facing warning (the banner is not the model's choice).
+SCAN_STATUS_PATH = os.path.expanduser("~/.falke-business-pulse/last-scan-status.json")
 
 # Only the pulse directory is configurable (config.json key of the same name).
 DEFAULTS = {
@@ -154,16 +161,160 @@ __TOOLBAR__
 </div></body></html>"""
 
 
+def _scan_status() -> dict:
+    """Read the last-scan integrity marker written by the read core. Returns {} on
+    ANY problem (absent / unreadable / not JSON / not a dict) — never raises."""
+    try:
+        with open(SCAN_STATUS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _pulse_run_token(page_html: str) -> str | None:
+    """Extract the run token the pulse-save step stamped into the served HTML
+    (`<!-- falke-pulse-run: TOKEN -->`), or None if absent/unparseable. The token is
+    the read tool's `cutoff`, so it correlates the served pulse to the status
+    marker by IDENTITY — not by which file is newer (the marker is written DURING
+    the read, the pulse saved AFTER, so mtime ordering is the wrong signal)."""
+    m = re.search(r"<!--\s*falke-pulse-run:\s*(.*?)\s*-->", page_html)
+    return m.group(1).strip() if m else None
+
+
+# --- Anna's on-brand banner styling, inlined for SELF-CONTAINED injection -------
+# The served HTML gets the banner prepended into an arbitrary pulse, so the styling
+# is INLINE (no dependency on the pulse's <style>, no <script>, no external assets —
+# CSP-safe under style-src 'unsafe-inline'). This mirrors the class-based
+# .scan-banner block Anna added to reference/digest-template.html for the inline
+# (model-rendered) pulse. FUNCTIONAL alert palette held outside the brand-orange
+# rule: RED #A4161A (edge/account-chip #6E0D10), AMBER #8A5A00 (edge #5C3C00), white
+# type; IBM Plex Sans body + IBM Plex Mono status code/account chip (system
+# fallbacks). NOTE: the AMBER #8A5A00-vs-brand-orange functional-color exception is
+# flagged for Floyd's conscious sign-off.
+_BANNER_BASE = (
+    "position:sticky;top:0;z-index:10000;display:flex;align-items:center;"
+    "flex-wrap:wrap;gap:8px 14px;padding:11px 18px;color:#FFFFFF;"
+    "font-family:'IBM Plex Sans','Helvetica Neue',Helvetica,Arial,'Liberation Sans',sans-serif;"
+    "font-size:13px;line-height:1.4;-webkit-print-color-adjust:exact;print-color-adjust:exact;"
+)
+_BANNER_CODE = (
+    "font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
+    "font-weight:700;font-size:11px;letter-spacing:0.14em;white-space:nowrap;"
+    "padding:2px 9px;border:1px solid rgba(255,255,255,0.55);border-radius:2px;"
+)
+_BANNER_ACCOUNTS = (
+    "font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;"
+    "font-weight:700;letter-spacing:0.01em;background:#6E0D10;color:#fff;"
+    "padding:2px 8px;border-radius:2px;white-space:normal;"
+)
+
+
+def _incomplete_banner(info: dict) -> str:
+    """RED 'incomplete scan' banner (Anna's styling) naming the affected account(s)
+    — those that FAILED (timed out / stalled, contributed nothing) or were CAPPED
+    (read but older in-window mail may be unread). Built ENTIRELY from the Python-
+    written marker (account name, HTML-escaped) — no model output flows into it, so an
+    injected 'hide the warning' instruction cannot remove it and the account name
+    cannot smuggle markup. No script (CSP-safe). Load-bearing (asserted):
+    id="pulse-scan-warning", the string "INCOMPLETE SCAN", and the escaped account
+    name(s) as visible text."""
+    failed = [
+        html.escape(str(f.get("account", "?")))
+        for f in (info.get("accounts_failed") or []) if isinstance(f, dict)
+    ]
+    capped = [
+        html.escape(str(c.get("account", "?")))
+        for c in (info.get("accounts_capped") or []) if isinstance(c, dict)
+    ]
+    escaped = failed + capped
+    names = ", ".join(escaped) or "one or more accounts"
+    # "is missing" when mail is definitely absent (failures only); "may be missing"
+    # once any account was CAPPED (older in-window mail may or may not exist).
+    verb = "is" if not capped else "may be"
+    tail = (
+        "That account was not fully read this run (timed out or read-capped)"
+        if len(escaped) == 1
+        else "Those accounts were not fully read this run (timed out or read-capped)"
+    )
+    return (
+        f'<div id="pulse-scan-warning" role="alert" style="{_BANNER_BASE}'
+        'background:#A4161A;border-left:6px solid #6E0D10;border-bottom:3px solid #6E0D10;">'
+        '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" '
+        'focusable="false" style="display:block;flex:0 0 auto;">'
+        '<path d="M12 2.8 L21.6 20.4 L2.4 20.4 Z" fill="#fff"/>'
+        '<line x1="12" y1="9.2" x2="12" y2="14.4" stroke="#A4161A" stroke-width="2.2" '
+        'stroke-linecap="round"/><circle cx="12" cy="17.4" r="1.25" fill="#A4161A"/></svg>'
+        f'<span style="{_BANNER_CODE}">INCOMPLETE SCAN</span>'
+        f'<span style="font-weight:500;"><strong style="font-weight:700;">This pulse {verb} '
+        f'missing mail from</strong> <span style="{_BANNER_ACCOUNTS}">{names}</span>. '
+        f"{tail} &mdash; treat the pulse below as partial.</span></div>"
+    )
+
+
+def _neutral_banner() -> str:
+    """AMBER 'scan status unknown' banner (Anna's styling). N-A: this is the
+    AUTHORITATIVE completeness surface, so it must NEVER imply 'complete' when it
+    cannot confirm the served pulse matches the marker — say so instead of staying
+    silent. Default on ANY uncertainty. Load-bearing (asserted): id and the string
+    "SCAN STATUS UNKNOWN". No script (CSP-safe)."""
+    return (
+        f'<div id="pulse-scan-warning" role="status" style="{_BANNER_BASE}'
+        'background:#8A5A00;border-left:6px solid #5C3C00;border-bottom:3px solid #5C3C00;">'
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true" '
+        'focusable="false" style="display:block;flex:0 0 auto;">'
+        '<path d="M12 3.4 L21 19.4 L3 19.4 Z" fill="none" stroke="#fff" stroke-width="2" '
+        'stroke-linejoin="round"/><line x1="12" y1="9" x2="12" y2="13.6" stroke="#fff" '
+        'stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1.1" '
+        'fill="#fff"/></svg>'
+        f'<span style="{_BANNER_CODE}">SCAN STATUS UNKNOWN</span>'
+        '<span style="font-weight:500;"><strong style="font-weight:700;">Treat this pulse '
+        "as possibly incomplete.</strong> Couldn&rsquo;t confirm it matches the latest "
+        "scan status.</span></div>"
+    )
+
+
+def _status_banner(page_html) -> str:
+    """The structural scan-completeness banner injected into the SERVED HTML.
+
+    Correlation is by RUN TOKEN (identity), NOT mtime: the marker is written DURING
+    the read and the pulse saved AFTER, so "marker older than pulse" is the NORMAL
+    ordering, not a staleness signal. Decision:
+      - marker status "partial"  -> RED INCOMPLETE banner (names accounts). This is
+        driven by the marker's status ALONE, independent of the token — so a
+        spoofed pulse token can NEVER hide a genuine partial.
+      - marker present, "ok", and its run token (cutoff) MATCHES the token stamped
+        in this pulse -> no banner (confirmed complete).
+      - marker ABSENT, or either token missing/unparseable, or tokens DIFFER
+        -> amber SCAN-STATUS-UNKNOWN (default to caution on ANY uncertainty).
+    """
+    info = _scan_status()
+    if info.get("status") == "partial":
+        return _incomplete_banner(info)  # status-driven; token-independent
+    if page_html is not None:
+        marker_token = info.get("cutoff")
+        pulse_token = _pulse_run_token(page_html)
+        if not info or not marker_token or not pulse_token or marker_token != pulse_token:
+            return _neutral_banner()
+    return ""
+
+
 def _render(nonce: str) -> bytes:
     path = _latest_pulse()
     bar = TOOLBAR.replace("__STAMP__", _stamp(path)).replace("__NONCE__", nonce)
+    page = None
+    if path:
+        with open(path, encoding="utf-8") as f:
+            page = f.read()
+    # COND-5 structural backstop: prepend the scan-completeness banner (or "") ABOVE
+    # the toolbar. It is built from the Python-written marker, so it CANNOT be
+    # suppressed by anything the model rendered into the pulse body.
+    chrome = _status_banner(page) + bar
     if not path:
-        return PLACEHOLDER.replace("__TOOLBAR__", bar).encode()
-    with open(path, encoding="utf-8") as f:
-        html = f.read()
-    # Inject the toolbar immediately after the opening <body> tag.
-    injected, n = re.subn(r"(<body[^>]*>)", r"\1" + bar.replace("\\", "\\\\"), html, count=1)
-    return (injected if n else bar + html).encode()
+        return PLACEHOLDER.replace("__TOOLBAR__", chrome).encode()
+    # Inject banner+toolbar immediately after the opening <body> tag.
+    injected, n = re.subn(r"(<body[^>]*>)", r"\1" + chrome.replace("\\", "\\\\"), page, count=1)
+    return (injected if n else chrome + page).encode()
 
 
 def _run_refresh() -> None:
