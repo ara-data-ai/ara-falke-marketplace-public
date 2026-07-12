@@ -46,7 +46,7 @@ from read_core import MailAccount, ReadMailDriver, read_apple_mail  # noqa: E402
 
 DOCUMENTED_KEYS = {
     "status", "messages", "accounts_read", "accounts_failed", "accounts_capped",
-    "accounts_skipped_dark", "cutoff",
+    "cutoff",
 }
 
 
@@ -65,7 +65,6 @@ class _FakeDriver(ReadMailDriver):
 
 def offline() -> int:
     os.environ.setdefault("APPLE_MAIL_READ_ALLOWED_ACCOUNTS", "falkecorp.com")
-    os.environ["APPLE_MAIL_READ_KNOWN_SENDERS"] = ""  # deterministic; personal dark
     tmp = tempfile.mkdtemp()
     res = read_apple_mail(
         "2026-07-11 06:00:00",
