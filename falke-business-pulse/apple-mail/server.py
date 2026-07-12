@@ -1,4 +1,4 @@
-"""Apple Mail MCP server (ARA CoS).
+"""Apple Mail MCP server (Falke CoS).
 
 Host-native local MCP server. Exposes EXACTLY TWO tools, both least-privilege:
   - `create_apple_mail_draft` — creates a draft in Apple Mail's Drafts folder

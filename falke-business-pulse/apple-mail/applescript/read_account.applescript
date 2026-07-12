@@ -214,6 +214,13 @@ on parseISO(s)
 	set theMin to (text 15 thru 16 of s) as integer
 	set theSec to (text 18 thru 19 of s) as integer
 	set d to current date
+	-- Pin day to 1 BEFORE setting month (security-review P1): starting from the
+	-- machine's CURRENT date, a base day that exceeds the target month's length
+	-- (e.g. today is the 31st, target month is April) makes `set month` roll the
+	-- date into the NEXT month — silently shifting the cutoff a month late and
+	-- narrowing the scan window. Day 1 exists in every month, so month-set can
+	-- never roll over; the real day is applied after.
+	set day of d to 1
 	set year of d to theYear
 	set month of d to theMonth
 	set day of d to theDay
