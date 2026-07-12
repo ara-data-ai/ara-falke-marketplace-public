@@ -50,7 +50,7 @@ fi
 # so the Refresh button's headless run can load it. SOFT-FAIL discipline: the
 # viewer must still install even if the CLI is missing or the network is down
 # (Refresh reports its own generic error; serving is never blocked).
-MARKETPLACE_URL="https://github.com/ara-data-ai/ara-falke-marketplace.git"
+MARKETPLACE_URL="https://github.com/ara-data-ai/ara-falke-marketplace-public.git"
 MARKETPLACE_NAME="ara-falke"
 PLUGIN_NAME="falke-business-pulse"
 
