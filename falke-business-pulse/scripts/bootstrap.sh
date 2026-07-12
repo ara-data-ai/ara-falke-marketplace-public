@@ -12,7 +12,7 @@
 #      the pulse-server files change (hash-stamp), so the server isn't churned
 #      every session.
 #
-# Idempotent and quiet on the happy path. Floyd reviews this for the execution
+# Idempotent and quiet on the happy path. This is security-reviewed for the execution
 # threat model before ship.
 
 set -euo pipefail
@@ -47,7 +47,7 @@ if [ -z "${PYBIN}" ] && [ "$(uname -s)" = "Darwin" ]; then
   echo "[falke-business-pulse] No Python >=3.10 found — downloading a private copy (one-time, ~45 MB)..." >&2
   # Pinned release + per-arch SHA-256 (from the published .sha256 sibling
   # assets). Verified fail-closed below — a tampered or truncated download
-  # never becomes the interpreter that runs the mail agent (Floyd gate F1).
+  # never becomes the interpreter that runs the mail agent (security review F1).
   case "$(uname -m)" in
     arm64)  PBS_ARCH="aarch64"
             PBS_SHA="5dfd4d81ad8ea0407e6153ed998a5fba332275c60ece81c6db2b58e443de60b9" ;;

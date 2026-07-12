@@ -6,7 +6,7 @@ server** (read + draft, never send), auto-registered, with a one-Python-dep
 bootstrap. Distributed through the same private https-git marketplace
 (`ara-falke`) as `falke-bid-tools`.
 
-> **Status: assembled, pending live plugin-install validation on Derick's Mac +
+> **Status: assembled, pending live plugin-install validation on the operator's Mac +
 > go-live review.** This packages the **independently reviewed, live-validated**
 > `apple-mail-draft-mcp` server **unchanged** — it is not a new build. The plugin
 > adds only: manifest, `.mcp.json`, the SessionStart bootstrap hook, and the

@@ -7,7 +7,7 @@ return to JSON, so a non-serializable field would only surface over the wire). I
 runs WITHOUT the live MCP SDK and WITHOUT touching Apple Mail (a tiny in-process
 fake) and WITHOUT writing the real marker/run-log (temp dir).
 
---live mode (Derick runs this post-publish; NEEDS real Mail + TCC) is the cap's
+--live mode (run this post-publish; NEEDS real Mail + TCC) is the cap's
 boundary/completeness/SPEED probe (R-SAFE):
   * SPEED — times a real read; the ~90s per-account timeout should be gone.
   * BOUNDARY DECISION — with an account name, it reads that ONE account directly and

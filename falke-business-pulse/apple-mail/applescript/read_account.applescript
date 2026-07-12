@@ -16,7 +16,7 @@
 -- inbox (O(inbox)) and timed out at 90s — this examines the NEWEST min(total,
 -- ceiling) messages by index and returns every in-window message among them.
 --
--- R-SAFE (ordering-INDEPENDENT completeness — Floyd's COND-5 remediation):
+-- R-SAFE (ordering-INDEPENDENT completeness — the security review's COND-5 remediation):
 --   * NO early stop. Every one of the examined messages is checked and every
 --     in-window one (date received > cutoff) is collected, REGARDLESS of order — so
 --     a single message moved/delivered out of order (recent index, old date) can no
@@ -141,7 +141,7 @@ on run argv
 				-- interleaved out-of-window message cannot truncate the collection.
 			end repeat
 
-			-- BOUNDARY signal (Floyd's R-SAFE saturation rule): is the OLDEST-BY-INDEX
+			-- BOUNDARY signal (the security review's R-SAFE saturation rule): is the OLDEST-BY-INDEX
 			-- examined message (the far end of the examined range) STILL in window? If
 			-- so, the cutoff falls BEYOND what we examined, so in-window mail may sit
 			-- among the unexamined messages (Python flags CAPPED when total > examined).

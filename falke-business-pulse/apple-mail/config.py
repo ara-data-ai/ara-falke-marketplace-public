@@ -6,7 +6,7 @@ arbitrary stranger: every recipient (to + cc) must be on an allow-listed domain.
 The allow-list is configurable via the env var APPLE_MAIL_DRAFT_ALLOWED_DOMAINS
 (comma-separated), falling back to the Falke default. Keep it conservative —
 this is the control that bounds the worst-case recipient of a fully
-injection-controlled run (Floyd's §2.1, the one residual he "will not hand-wave").
+injection-controlled run (the security review §2.1, the one residual it will not hand-wave).
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@
 > enumeration timeout is eliminated in the logic; **the raw osascript speed and
 > Mail's index-ordering are confirmed only by a live run** (mocks can't measure them
 > — see `scripts/smoke_read_shape.py --live`). Option D (provider API) remains the
-> strategic follow-up behind a Floyd threat-model review.
+> strategic follow-up behind a security-review threat-model review.
 
 ## Context — the root cost
 
@@ -97,7 +97,7 @@ and return a delta in well under a second.
 - **Con:** biggest change — new auth (OAuth for Gmail; app-specific password /
   token for iCloud IMAP), new dependency and **new attack surface / secret
   storage**, and it **diverges from the COND-8 "read only what Mail already has
-  configured" privacy model** (a Floyd threat-model review would be required).
+  configured" privacy model** (a security-review threat-model review would be required).
   IMAP for iCloud needs an app-specific password the user must mint.
 - **Risk:** high effort + new security surface; highest payoff.
 
@@ -113,7 +113,7 @@ first run) and WS1 (degrade on stall) as the safety net.
 
 **Revisit Option D (provider API) as the strategic direction** if the personal
 path becomes central and the cap's completeness tradeoff proves limiting — but only
-behind a Floyd threat-model review, because it adds authentication, secret storage,
+behind a security-review threat-model review, because it adds authentication, secret storage,
 and a departure from the "Mail-configured accounts only" COND-8 model.
 
 Options B and C are **not recommended** on their own: B is too fragile across Mail

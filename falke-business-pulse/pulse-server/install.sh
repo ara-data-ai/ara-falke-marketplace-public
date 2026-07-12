@@ -70,7 +70,7 @@ elif ! "$CLAUDE_BIN" plugin list 2>/dev/null | grep -q "${PLUGIN_NAME}@${MARKETP
   "$CLAUDE_BIN" plugin install "${PLUGIN_NAME}@${MARKETPLACE_NAME}" || \
     echo "[pulse-server] WARNING: CLI plugin install failed — Refresh won't work until this succeeds; it retries on the next plugin update."
 else
-  # Already registered: pull it up to the current version (Floyd D6 — the
+  # Already registered: pull it up to the current version (security review D6 — the
   # CLI-scope copy doesn't track Desktop-side updates by itself; observed
   # live 2026-07-03: a stale 0.2.2 CLI copy re-pointed launchd at an
   # ephemeral path and killed the viewer). Soft-fail: offline just warns.
