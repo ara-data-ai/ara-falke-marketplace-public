@@ -45,9 +45,10 @@ the short first-run setup conversation, otherwise it proceeds with no prompting.
 > re-verify). A plain `~/` path is the simplest reliable mechanism and is equally
 > outside git + outside Dropbox + FileVault-protected.
 
-Run-state (not config): `state/last-run.txt` in the project folder holds the last
+Run-state (not config): **`~/.falke-business-pulse/last-run.txt`** holds the last
 successful run timestamp = the next run's `since_iso` cutoff. Absent ⇒ default to
-24h ago.
+24h ago. This path is CANONICAL — never a relative `state/` path, which would
+fork the cutoff per working directory (chat vs headless vs scheduled runs).
 
 > At install the employee only confirms the `.mcp.json` allow-list defaults (Group
 > A — already safe) and grants one macOS permission. The Dropbox path and the

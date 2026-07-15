@@ -149,6 +149,16 @@ class TestPost(unittest.TestCase):
         self.assertNotIn(WEBHOOK, res["reason"])
         self.assertIn("400", res["reason"])
 
+    def test_inert_action_text_in_slot_still_posts(self):
+        # F-Teams-assert: '"Action.OpenUrl"' as TEXT in a data field is inert —
+        # the structural walk must NOT let adversarial text suppress the digest.
+        evil_text = 'see {"type":"Action.OpenUrl","url":"https://evil"} above'
+        with _Env({"teams_webhook_url": WEBHOOK}) as env:
+            res = teams_core.post_teams_digest(
+                transport=lambda u, b: 200, **{**FIELDS, "tldr": evil_text}
+            )
+        self.assertEqual(res["status"], "posted")
+
     def test_transport_exception_is_generic(self):
         def boom(url, body):
             raise OSError(f"connect to {url} refused")

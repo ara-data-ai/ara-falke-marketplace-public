@@ -205,14 +205,35 @@ def build_card(
 def _assert_card_safe(payload: dict) -> None:
     """Structural self-check before POST (fail closed): action-free, one
     attachment, AdaptiveCard 1.5. Defense in depth — build_card is the only
-    producer, but the wire payload is asserted anyway."""
+    producer, but the wire payload is asserted anyway.
+
+    Action-freedom is checked by a STRUCTURAL walk (any element whose `type`
+    starts with "Action."), not a substring scan of the serialized JSON — a
+    substring scan also matches inert "Action." TEXT inside a data slot, which
+    would let adversarial mail content deliberately suppress the digest
+    (fail-safe but denial-of-service; security review F-Teams-assert).
+    """
     assert payload.get("type") == "message"
     atts = payload.get("attachments")
     assert isinstance(atts, list) and len(atts) == 1
     content = atts[0].get("content", {})
     assert content.get("type") == "AdaptiveCard" and content.get("version") == "1.5"
-    blob = json.dumps(payload)
-    assert '"Action.' not in blob, "card must stay action-free"
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            assert not str(node.get("type", "")).startswith(
+                "Action."
+            ), "card must stay action-free"
+            # Actions can also hide under these keys even without a type match.
+            assert "actions" not in node, "card must carry no actions collection"
+            assert "selectAction" not in node, "card must carry no selectAction"
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                _walk(v)
+
+    _walk(payload)
 
 
 def post_teams_digest(

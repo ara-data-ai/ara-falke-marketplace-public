@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "falke-business-pulse",
   "displayName": "Falke Business Pulse",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Falke's morning Chief-of-Staff routine: read both Falke mailboxes, calendar, and Dropbox; produce a one-page business pulse; draft (never send) nudges; post one Teams digest.",
   "author": { "name": "ARA Data & AI Consulting" },
   "keywords": ["chief-of-staff", "business-pulse", "apple-mail", "falke", "mcp"]
