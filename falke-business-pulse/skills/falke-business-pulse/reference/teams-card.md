@@ -1,5 +1,13 @@
 # Teams digest — Falke-branded Adaptive Card + output-shape contract
 
+> **Executable source of truth:** the card is now BUILT IN CODE by
+> `apple-mail/teams_core.py` (`build_card`) and posted by the `post_teams_digest`
+> MCP tool — the skill passes bounded data fields only and never assembles or
+> POSTs JSON itself. This document is the design rationale, the security
+> contract, and the data-slot formatting convention; if this document and
+> `teams_core.py` ever disagree on structure, the CODE wins and this doc gets
+> updated.
+
 The digest is posted to the **one** configured Teams channel via the Workflows
 (Power Automate) webhook (plain incoming webhooks are retired — Workflows is the
 supported replacement; it accepts **Adaptive Cards**, not the legacy MessageCard

@@ -1,17 +1,20 @@
-# Falke Business Pulse (Cowork plugin) — PROTOTYPE, pending go-live review
+# Falke Business Pulse (Cowork plugin)
 
-One plugin that bundles **the morning Chief-of-Staff routine** as a Cowork
-plugin: the `/Falke-business-pulse` skill + the host-native **`apple-mail` MCP
-server** (read + draft, never send), auto-registered, with a one-Python-dep
-bootstrap. Distributed through the same private https-git marketplace
-(`ara-falke`) as `falke-bid-tools`.
+One plugin that bundles **the morning Chief-of-Staff routine**: the
+`/Falke-business-pulse` skill + the host-native **`apple-mail` MCP server**
+(read + draft + the one fixed Teams post — never send-mail), the self-healing
+**pulse viewer** (`http://127.0.0.1:8787`, bookmarkable, Refresh button,
+7:00 AM weekday auto-refresh), zero-touch bootstrap, test suites, and golden
+classification fixtures. Distributed via the public marketplace
+(`ara-falke-marketplace-public`), with the private marketplace as the source
+repo.
 
-> **Status: assembled, pending live plugin-install validation on the operator's Mac +
-> go-live review.** This packages the **independently reviewed, live-validated**
-> `apple-mail-draft-mcp` server **unchanged** — it is not a new build. The plugin
-> adds only: manifest, `.mcp.json`, the SessionStart bootstrap hook, and the
-> skill. Requires Cowork (hooks + plugin-bundled local MCP servers run in the
-> Cowork desktop app). Still independently reviewed before any ship.
+> **Status: PRODUCTION — security-review approved (full), all conditions
+> closed.** Every release runs `scripts/release.sh`, which enforces the test
+> sweep, the version-bump rule, the internal-name scrub, and byte-parity
+> between the private source and the public marketplace. Runtime map:
+> `docs/RUNTIME-LAYOUT.md`. Design record: `docs/adr/`. Classification eval:
+> `eval/README.md`.
 
 ## Layout (mirrors falke-bid-tools; verified against the INSTALL-DESIGN)
 

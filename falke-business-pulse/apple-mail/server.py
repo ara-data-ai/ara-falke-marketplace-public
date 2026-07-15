@@ -1,16 +1,21 @@
 """Apple Mail MCP server (Falke CoS).
 
-Host-native local MCP server. Exposes EXACTLY TWO tools, both least-privilege:
+Host-native local MCP server. Exposes EXACTLY THREE tools, all least-privilege:
   - `create_apple_mail_draft` — creates a draft in Apple Mail's Drafts folder
     via osascript and NEVER sends (write side; draft-only).
   - `read_apple_mail` — reads new messages since a cutoff from ALLOW-LISTED
     accounts only (read side; READ-ONLY, the CoS morning scan).
+  - `post_teams_digest` — posts the FIXED morning-digest Adaptive Card to the
+    one configured Teams channel (the routine's single automated send). The
+    card template is code (teams_core.build_card); the model passes bounded
+    DATA FIELDS only and can never restructure the card or add actions.
 
-COND-2 (least-privilege tool surface): this file registers exactly TWO @mcp.tools
-and no others. There is no send/delete/move/modify/mark tool anywhere. The
-write tool can only `save` a draft; the read tool can only read message
-properties of allow-listed accounts. The security-critical logic lives in
-draft_core.py (write) and read_core.py (read).
+COND-2 (least-privilege tool surface): this file registers exactly THREE
+@mcp.tools and no others. There is no send/delete/move/modify/mark mail tool
+anywhere. The write tool can only `save` a draft; the read tool can only read
+message properties of allow-listed accounts; the Teams tool can only deliver
+the fixed card to the one configured webhook. The security-critical logic lives
+in draft_core.py (write), read_core.py (read), and teams_core.py (digest post).
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from read_core import (
     ReadValidationError,
     read_apple_mail as _read_apple_mail,
 )
+from teams_core import post_teams_digest as _post_teams_digest
 
 mcp = FastMCP("apple-mail")
 
@@ -160,6 +166,48 @@ def read_apple_mail(
     except ReadMailError as exc:
         # COND-5 fail-loud: timeout / Mail error / incomplete scan.
         raise RuntimeError(f"Apple Mail read error — failing loud: {exc}") from exc
+
+
+@mcp.tool()
+def post_teams_digest(
+    date_str: str,
+    tldr: str = "",
+    waiting: str = "",
+    needs_response: str = "",
+    high_priority: str = "",
+    calendar: str = "",
+    dropbox: str = "",
+    drafts_note: str = "",
+    scan_warning: str = "",
+) -> dict:
+    """Post the FIXED Falke morning-digest card to the one configured Teams channel.
+
+    The routine's SINGLE automated send. Pass the digest's computed summaries as
+    plain-text DATA FIELDS (Adaptive Card markdown allowed per
+    reference/teams-card.md's data-slot convention). This tool builds the entire
+    fixed card itself — the caller cannot restructure it, add Action elements,
+    attach images, or change the destination. Every field is length-bounded.
+
+    - The webhook comes from local config (`teams_webhook_url`); when it is not
+      configured the result is {"status": "skipped"} — Teams is OPTIONAL and a
+      skip is clean, never an error. The URL is never echoed anywhere.
+    - `scan_warning`: pass a one-line account summary ONLY when the mail scan was
+      `status: "partial"` — it renders as the card's INCOMPLETE SCAN strip.
+    - Returns {"status": "posted" | "skipped" | "error", "reason": <generic>}.
+      A Teams failure must never fail the rest of the pulse — report it in the
+      digest appendix and move on.
+    """
+    return _post_teams_digest(
+        date_str=date_str,
+        tldr=tldr,
+        waiting=waiting,
+        needs_response=needs_response,
+        high_priority=high_priority,
+        calendar=calendar,
+        dropbox=dropbox,
+        drafts_note=drafts_note,
+        scan_warning=scan_warning,
+    )
 
 
 if __name__ == "__main__":

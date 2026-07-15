@@ -2,10 +2,28 @@
 # Install the Falke Pulse local viewer: launchd-managed localhost server
 # (http://127.0.0.1:8787) + optional 7:00 AM weekday refresh.
 # Run once per laptop:  ./install.sh [--with-morning-run]
+# Remove everything it installed:  ./install.sh --uninstall
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTS="$HOME/Library/LaunchAgents"
+
+# --- Uninstall: remove exactly what install created; keep the user's data ----
+if [[ "${1:-}" == "--uninstall" ]]; then
+  for name in com.falke.pulse-server com.falke.pulse-morning; do
+    launchctl bootout "gui/$(id -u)/$name" 2>/dev/null || true
+    rm -f "$AGENTS/$name.plist"
+    echo "[pulse-server] removed: $name"
+  done
+  rm -rf "$HOME/Library/Application Support/falke-pulse-server"
+  echo "[pulse-server] removed: durable server copy + install stamp"
+  echo "[pulse-server] KEPT (yours, delete manually if wanted):"
+  echo "  ~/.falke-business-pulse/            (config, run state, scan marker)"
+  echo "  ~/Claude/Projects/Falke-Business-Pulse/  (your saved pulses)"
+  echo "  ~/Library/Logs/falke-pulse-server/  and  ~/Library/Logs/apple-mail-draft-mcp/  (logs)"
+  echo "[pulse-server] Uninstall complete. The plugin itself: 'claude plugin uninstall falke-business-pulse@ara-falke' + remove from the Cowork Directory."
+  exit 0
+fi
 # Caller (bootstrap.sh) passes the resolved interpreter via $PYTHON; fall back
 # to whatever python3 is on PATH for manual installs.
 PYTHON="${PYTHON:-$(command -v python3 || true)}"

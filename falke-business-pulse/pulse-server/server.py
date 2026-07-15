@@ -57,7 +57,8 @@ REFRESH_ARGS = [
     "--permission-mode", "acceptEdits",
     "--allowedTools",
     "mcp__plugin_falke-business-pulse_apple-mail__read_apple_mail,"
-    "mcp__plugin_falke-business-pulse_apple-mail__create_apple_mail_draft",
+    "mcp__plugin_falke-business-pulse_apple-mail__create_apple_mail_draft,"
+    "mcp__plugin_falke-business-pulse_apple-mail__post_teams_digest",
 ]
 
 # launchd runs us with a minimal PATH; resolve the claude CLI explicitly.
