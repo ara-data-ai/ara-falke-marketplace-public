@@ -455,3 +455,21 @@ class NormalizedBid(BaseModel):
     faithful-mirror Bid_Form these are annotations only — the dollars stay
     as-submitted. The leveled-view builder (build_normalized_view) applies them.
     """
+
+    @property
+    def vacated_by_reclass(self) -> dict[str, str]:
+        """Divisions this bid's reclass recommendations vacate, keyed
+        ``from_division`` → ``to_division``.
+
+        The SINGLE derivation for the phantom-gap suppressions (Floyd W2-4 —
+        carried on the normalized view, never recomputed per consumer):
+        audit.py skips SCOPE_GAP_IMPLICIT on these divisions (§6), and
+        write_matrix.py's leveled R5 branch renders them blank with a
+        reclass comment instead of a false "no pricing submitted" red
+        (GOLD-DEV-8). First recommendation wins the TO label when a division
+        feeds more than one target.
+        """
+        out: dict[str, str] = {}
+        for rec in self.reclass_recommendations:
+            out.setdefault(rec.from_division, rec.to_division)
+        return out

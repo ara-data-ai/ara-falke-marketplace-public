@@ -113,6 +113,22 @@ def _resolve_cell_state(item: LineItem) -> tuple[CellState, Optional[Decimal], s
     return CellState.AMOUNT, item.amount, _fmt(item.amount)
 
 
+# The state→amount inclusion table for a division's OWN arithmetic: which line
+# CellStates contribute a real amount to a division subtotal sum. This is the
+# SINGLE SHARED TABLE for both consumers — _resolve_subtotal_cell (Rule 1) and
+# the reclass touched-division re-derivation in _apply_reclass_moves (§3) — so
+# the two sites can never drift (Marvin GOLD-DEV-10 ruling (2); contract-tested
+# in tests/test_normalize.py TestSubtotalStateContract). NOT_COMPARABLE is IN:
+# the bidder's own arithmetic keeps an NC amount — only cross-bid benchmarks
+# fence it out (ENC-2). BY_OWNER_OTHERS / EXCLUDED / NULL_BLANK are OUT.
+SUBTOTAL_SUM_STATES: tuple[CellState, ...] = (
+    CellState.AMOUNT,
+    CellState.EXPLICIT_ZERO,
+    CellState.ALLOWANCE,
+    CellState.NOT_COMPARABLE,
+)
+
+
 def _resolve_subtotal_cell(
     division: DivisionBid,
     line_cells: dict[str, CellValue],
@@ -156,8 +172,7 @@ def _resolve_subtotal_cell(
     # Derive from line items for ITEMIZED / PARTIAL_ITEMIZED
     computed_sum = Decimal("0")
     for cell in line_cells.values():
-        if cell.state in (CellState.AMOUNT, CellState.EXPLICIT_ZERO,
-                          CellState.ALLOWANCE, CellState.NOT_COMPARABLE):
+        if cell.state in SUBTOTAL_SUM_STATES:
             computed_sum += cell.amount or Decimal("0")
 
     # Validate against stated subtotal
@@ -181,7 +196,11 @@ def _resolve_subtotal_cell(
                 flags=flags,
             )
     else:
-        amount = computed_sum if computed_sum > Decimal("0") else None
+        # W-D ruling 5 (credit semantics, C-W4-3): the derivation gate is
+        # SIGN-AWARE — any non-zero derived sum (a net credit included) is a
+        # real AMOUNT; only a derived ZERO resolves to NULL_BLANK (REM-1:
+        # derived zero is nothing; a STATED $0 stays EXPLICIT_ZERO above).
+        amount = computed_sum if computed_sum != Decimal("0") else None
         if amount is not None:
             # REM-2: mark the subtotal as engine-DERIVED (no stated subtotal
             # on the form) so the leveled sheet can disclose it on-cell.
@@ -489,10 +508,17 @@ def _apply_reclass_moves(
     """Apply recommended reclass moves to a DivisionBid list (leveled view, §3).
 
     Relocates each recommended line item from its `from_division` into its
-    `to_division`, re-derives the affected division subtotals, and creates the
-    target division if it does not yet exist. Grand totals are unchanged (the
-    move is between divisions). This is the destructive half that §1 split out
-    of normalization — it runs ONLY for the leveled view.
+    `to_division`, re-derives ONLY the subtotals of divisions a move actually
+    TOUCHED (the union of from/to across FIRED recommendations — Marvin
+    GOLD-DEV-10 ruling (1)), and creates the target division if it does not yet
+    exist. Every UNTOUCHED division passes through byte-identical: its stated
+    subtotal, cost structure, and REM-1 stated-$0 (EXPLICIT_ZERO) survive, so a
+    reclass match can never silently heal an R20 math error, understate an
+    allowance-bearing subtotal, or blank a verified $0 elsewhere in the bid.
+    Touched-division re-derivation uses the SAME state→amount inclusion table
+    as _resolve_subtotal_cell (SUBTOTAL_SUM_STATES — ruling (2)). Grand totals
+    are unchanged (the move is between divisions). This is the destructive half
+    that §1 split out of normalization — it runs ONLY for the leveled view.
     """
     if not recommendations:
         return list(divisions)
@@ -509,6 +535,9 @@ def _apply_reclass_moves(
         div_items[div.csi_code] = list(div.line_items)
         div_meta[div.csi_code] = div
 
+    # Divisions a move actually FIRED on (from + to). Only these are rebuilt.
+    touched: set[str] = set()
+
     for (from_code, desc), to_code in move_targets.items():
         if from_code not in div_items:
             continue
@@ -520,6 +549,8 @@ def _apply_reclass_moves(
             continue
         div_items[from_code] = staying
         div_items.setdefault(to_code, []).extend(moving)
+        touched.add(from_code)
+        touched.add(to_code)
         if to_code not in div_meta:
             canonical = get_canonical_division(to_code)
             div_meta[to_code] = DivisionBid(
@@ -531,20 +562,47 @@ def _apply_reclass_moves(
                 division_subtotal=None,
             )
 
-    def _derive_subtotal(div: DivisionBid, items: list[LineItem]) -> Optional[Decimal]:
+    def _rederive_touched_subtotal(
+        div: DivisionBid, items: list[LineItem]
+    ) -> Optional[Decimal]:
+        """Re-derive a TOUCHED division's subtotal from its post-move lines.
+
+        Uses the SAME state→amount inclusion table as _resolve_subtotal_cell
+        (SUBTOTAL_SUM_STATES): allowance and not-comparable amounts count;
+        by-owner and excluded lines do not. A LUMP_SUM target keeps its stated
+        total as the base (its dollars were never itemized) and ADDS the
+        moved-in line amounts. A derived sum of 0 with no lump base resolves
+        to None (NULL_BLANK downstream — REM-1's derived-zero rule).
+
+        W-D ruling 5 / Floyd C-W4-3: the gate is SIGN-AWARE (`!= 0`, not
+        `> 0`) — a from-division retaining a NET-NEGATIVE remainder (a credit
+        line) keeps its negative subtotal instead of being silently blanked
+        (R33: never silently alter a bid). The vacated-division rendering
+        never eats it: div_status classifies the negative AMOUNT as "priced",
+        so the writer's kind=="missing" vacated branch cannot fire.
+        """
+        line_sum = Decimal("0")
+        for item in items:
+            state, amount, _display = _resolve_cell_state(item)
+            if state in SUBTOTAL_SUM_STATES:
+                line_sum += amount or Decimal("0")
         if div.cost_structure == CostStructure.LUMP_SUM:
-            return div.division_subtotal
-        return sum(
-            (i.amount or Decimal("0")) for i in items
-            if not i.is_by_owner_others and not i.is_excluded and not i.is_allowance
-        ) or None
+            if div.division_subtotal is None:
+                return line_sum if line_sum != Decimal("0") else None
+            return div.division_subtotal + line_sum
+        return line_sum if line_sum != Decimal("0") else None
 
     result: list[DivisionBid] = []
     for div in divisions:
+        if div.csi_code not in touched:
+            # Byte-identical pass-through (ruling (1)) — the original
+            # DivisionBid, stated subtotal and EXPLICIT_ZERO semantics intact.
+            result.append(div)
+            continue
         items = div_items.get(div.csi_code, [])
         result.append(div.model_copy(update={
             "line_items": items,
-            "division_subtotal": _derive_subtotal(div, items),
+            "division_subtotal": _rederive_touched_subtotal(div, items),
         }))
 
     existing_codes = {d.csi_code for d in divisions}
@@ -553,7 +611,7 @@ def _apply_reclass_moves(
             items = div_items.get(code, [])
             result.append(meta.model_copy(update={
                 "line_items": items,
-                "division_subtotal": _derive_subtotal(meta, items),
+                "division_subtotal": _rederive_touched_subtotal(meta, items),
                 "classification_source": ClassificationSource.PIPELINE_REMAPPED,
                 "contractor_native_code": meta.contractor_native_code or code,
             }))

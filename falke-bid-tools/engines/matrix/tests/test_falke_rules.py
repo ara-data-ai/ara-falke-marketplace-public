@@ -298,9 +298,9 @@ class TestExclusionAndSummary:
                 column=_col_of(ws, n, "Excluder") + LEVELED_CSUB_OFFSET,
             ).value
             assert red_count and red_count >= 1
-            # Legend present.
-            _row_of(ws, 2, "LEGEND — FALKE HIGHLIGHT VOCABULARY "
-                           "(precedence: Red > Cyan > Yellow > Neutral)")
+            # Workbook legend present (W-D: one block, both data sheets).
+            _row_of(ws, 2, "LEGEND — READING THIS WORKBOOK "
+                           "(every signal, all three tabs)")
 
 
 class TestRem1StatedZeroSubtotal:
@@ -493,3 +493,423 @@ class TestRem2DerivedSubtotalComment:
                 column=_col_of(ws, n, "Derived Co") + LEVELED_CSUB_OFFSET)
             assert (stated_cell.comment is None
                     or "DERIVED" not in stated_cell.comment.text)
+
+
+class TestEnc3CompositionCheck:
+    """ENC-3 (S2-1, W-D): Σ displayed division subtotals vs stated CCS at
+    max($5, 0.5%) — RED on the leveled CCS cell + [FALKE R21] comment + a real
+    SUBTOTAL_COMPOSITION_DISCREPANCY AUDIT row (the $18,500 class)."""
+
+    @staticmethod
+    def _composition_doc(name, stated_ccs, div_amounts, derived=False):
+        divisions = []
+        for i, amount in enumerate(div_amounts):
+            code, dname = ("DIV 03 00 00", "Concrete") if i == 0 else (
+                "DIV 01 00 00", "General Requirements")
+            if derived:
+                divisions.append(_div(
+                    code, dname, None,
+                    items=[LineItem(description=f"{dname} work",
+                                    amount=amount)],
+                    cost=CostStructure.ITEMIZED))
+            else:
+                divisions.append(_div(code, dname, amount))
+        return BidDocument(
+            contractor_name=name,
+            form_type=FormType.FALKE_STANDARD,
+            bid_document_input_type=InputType.DIGITAL_NATIVE,
+            divisions=divisions,
+            footer=BidFooter(
+                construction_cost_subtotal=stated_ccs,
+                grand_total=stated_ccs,
+                grand_total_confidence=GrandTotalConfidence.LOW,
+            ),
+            qualifications=BidQualifications(),
+            extraction_confidence=ExtractionConfidence.HIGH,
+        )
+
+    def _run(self, docs):
+        from src.audit import AuditCode, AuditStatus, audit_bids
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+        items = audit_bids(bids)
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, docs)
+            ccs_row = _row_of(ws, 2, "CONSTRUCTION COST SUBTOTAL")
+            cells = {
+                doc.contractor_name: ws.cell(
+                    row=ccs_row, column=_col_of(ws, n, doc.contractor_name))
+                for doc in docs
+            }
+            snapshot = {
+                nm: (_hex(c), c.comment.text if c.comment else "")
+                for nm, c in cells.items()
+            }
+        return items, snapshot
+
+    def test_composition_failure_fires_red_cell_and_audit_row(self):
+        from src.audit import AuditCode, AuditStatus
+        docs = [
+            # Stated CCS 130,000 but displayed divisions sum 150,000 (Δ 20,000).
+            self._composition_doc("Composer Fail",
+                                  Decimal("130000"),
+                                  [Decimal("100000"), Decimal("50000")]),
+            self._composition_doc("Composer Clean",
+                                  Decimal("150000"),
+                                  [Decimal("100000"), Decimal("50000")]),
+        ]
+        items, snapshot = self._run(docs)
+        rows = [i for i in items
+                if i.code == AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY]
+        assert len(rows) == 1, [r.contractor_name for r in rows]
+        row = rows[0]
+        assert row.contractor_name == "Composer Fail"
+        assert row.status == AuditStatus.RED
+        assert row.view == "leveled"
+        assert row.value == "$20,000"
+        assert "does not compose" in row.message
+        # Leveled CCS cell: RED + [FALKE R21] composition comment.
+        hex_, comment = snapshot["Composer Fail"]
+        assert hex_ == RED
+        assert "[FALKE R21]" in comment
+        assert "does not compose from the displayed division subtotals" in comment
+        assert "delta $20,000.00" in comment
+        # Clean bidder: no paint, no composition comment.
+        hex_clean, comment_clean = snapshot["Composer Clean"]
+        assert hex_clean != RED
+        assert "does not compose" not in comment_clean
+
+    def test_within_tolerance_does_not_fire(self):
+        from src.audit import AuditCode
+        docs = [
+            # Δ 400 on a 100,000 CCS — within max($5, 0.5% × 100,000 = 500).
+            self._composition_doc("Near Miss",
+                                  Decimal("100000"),
+                                  [Decimal("60400"), Decimal("40000")]),
+            self._composition_doc("Peer", Decimal("90000"),
+                                  [Decimal("50000"), Decimal("40000")]),
+        ]
+        items, snapshot = self._run(docs)
+        assert not [i for i in items
+                    if i.code == AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY]
+        assert snapshot["Near Miss"][0] != RED
+
+    def test_no_stated_ccs_skips_check(self):
+        from src.audit import AuditCode
+        doc = self._composition_doc("No CCS Co", None,
+                                    [Decimal("100000"), Decimal("50000")])
+        docs = [doc, self._composition_doc("Peer", Decimal("90000"),
+                                           [Decimal("50000"), Decimal("40000")])]
+        items, _snapshot = self._run(docs)
+        assert not [i for i in items
+                    if i.code == AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY
+                    and i.contractor_name == "No CCS Co"]
+
+    def test_rem2_pointer_names_the_register_row(self):
+        """The REM-2 composition sentence now points at a row that EXISTS
+        (same tolerance as ENC-3 — the dangling 'see AUDIT' fix)."""
+        from src.audit import AuditCode, audit_bids
+        derived = self._composition_doc(
+            "Derived Gap Co", Decimal("130000"),
+            [Decimal("100000"), Decimal("50000")], derived=True)
+        docs = [derived,
+                self._composition_doc("Peer", Decimal("90000"),
+                                      [Decimal("50000"), Decimal("40000")])]
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+        items = audit_bids(bids)
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, docs)
+            sub_row = _row_of(ws, 2, "CONCRETE SUBTOTAL")
+            cell = ws.cell(row=sub_row,
+                           column=_col_of(ws, n, "Derived Gap Co")
+                           + LEVELED_CSUB_OFFSET)
+            assert cell.comment is not None
+            assert ("see the SUBTOTAL_COMPOSITION_DISCREPANCY row on the "
+                    "AUDIT tab") in cell.comment.text
+        # ...and the row it names is really on the register.
+        assert [i for i in items
+                if i.code == AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY
+                and i.contractor_name == "Derived Gap Co"]
+
+
+class TestMedianMembershipContract:
+    """M-2 (W-D): ONE median-membership rule everywhere — the leveled
+    benchmark block and the audit-side medians/gap-strings consume the SAME
+    set (falke_rules.median_membership: priced AND amount>0 AND not
+    R20-failed). Contract-tests the consumer sites against each other."""
+
+    def _field(self):
+        # Four clean pricers + one R20-failed bidder (stated 508k, lines 500k)
+        # + one absent bidder (draws the scope-gap string).
+        failed = _doc("Failed Math Co", [
+            _div("DIV 03 00 00", "Concrete", Decimal("508000"),
+                 items=[LineItem(description="Failed Math concrete work",
+                                 amount=Decimal("500000"))],
+                 cost=CostStructure.ITEMIZED),
+        ], Decimal("508000"))
+        absent = _doc("Absent Co", [
+            _div("DIV 01 00 00", "General Requirements", Decimal("50000")),
+        ], Decimal("50000"))
+        return [
+            _concrete_bidder("P310", "310000"),
+            _concrete_bidder("P450", "450000"),
+            _concrete_bidder("P500", "500000"),
+            _concrete_bidder("P520", "520000"),
+            failed, absent,
+        ]
+
+    def test_r20_failed_subtotal_leaves_every_median(self):
+        from src.audit import AuditCode, audit_bids
+        from src import falke_rules as fr
+        docs = self._field()
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+
+        # The ONE membership rule: failed bidder is out, four members remain.
+        assert fr.median_membership(
+            next(b for b in bids if b.contractor_name == "Failed Math Co"),
+            "DIV 03 00 00") is None
+        members = [fr.median_membership(b, "DIV 03 00 00") for b in bids]
+        assert sorted(m for m in members if m is not None) == [
+            310000.0, 450000.0, 500000.0, 520000.0]
+
+        # Consumer 1 — the written benchmark block.
+        items = audit_bids(bids)
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, docs)
+            sub_row = _row_of(ws, 2, "CONCRETE SUBTOTAL")
+            assert ws.cell(row=sub_row, column=_lev_bench_col(n)).value == 475000.0
+            assert ws.cell(row=sub_row, column=_lev_bench_col(n) + 2).value == 4
+            # Failed bidder keeps its R20 red and its written VAR% vs the
+            # fenced median: (508,000-475,000)/475,000.
+            fcol = _col_of(ws, n, "Failed Math Co")
+            fcell = ws.cell(row=sub_row, column=fcol + LEVELED_CSUB_OFFSET)
+            assert _hex(fcell) == RED
+            var = ws.cell(row=sub_row, column=fcol + 4).value
+            assert abs(var - 0.069474) < 1e-4
+
+        # Consumer 2 — the audit gap-value string cites the SAME median.
+        gap = next(i for i in items
+                   if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                   and i.contractor_name == "Absent Co"
+                   and i.division_csi == "DIV 03 00 00")
+        assert gap.value == "$475,000", (
+            f"audit gap string must cite the fenced sheet median, got {gap.value}")
+
+    def test_nc_composed_subtotal_fenced_from_audit_median(self):
+        from src.audit import AuditCode, audit_bids
+        nc = _doc("NC Co", [
+            _div("DIV 03 00 00", "Concrete", None,
+                 items=[LineItem(description="Owner option concrete package",
+                                 amount=Decimal("145000"),
+                                 is_not_comparable=True)],
+                 cost=CostStructure.ITEMIZED),
+        ], Decimal("145000"))
+        absent = _doc("Absent Co", [
+            _div("DIV 01 00 00", "General Requirements", Decimal("50000")),
+        ], Decimal("50000"))
+        docs = [_concrete_bidder("P190", "190000"),
+                _concrete_bidder("P200", "200000"),
+                _concrete_bidder("P250", "250000"), nc, absent]
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+        items = audit_bids(bids)
+        gap = next(i for i in items
+                   if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                   and i.contractor_name == "Absent Co"
+                   and i.division_csi == "DIV 03 00 00")
+        assert gap.value == "$200,000", (
+            f"NC-composed subtotal must be fenced (GOLD-DEV-4), got {gap.value}")
+
+    def test_zero_and_negative_subtotals_are_not_members(self):
+        from src import falke_rules as fr
+        neg = _doc("Credit Co", [
+            _div("DIV 03 00 00", "Concrete", Decimal("-5000")),
+        ], Decimal("-5000"))
+        zero = _doc("Zero Co", [
+            _div("DIV 03 00 00", "Concrete", Decimal("0")),
+        ], Decimal("0"))
+        for doc in (neg, zero):
+            bid = normalize_bid(doc)
+            assert fr.median_membership(bid, "DIV 03 00 00") is None, (
+                f"{doc.contractor_name} must not enter any median")
+
+
+class TestCreditSemantics:
+    """W-D ruling 5 (Floyd C-W4-3): a net-negative division subtotal is
+    LEGAL, preserved, rendered accounting-negative — never clamped, never
+    dropped. R22 red + NEGATIVE_UNCLASSIFIED RED row; fenced from medians;
+    the bidder's own arithmetic keeps it."""
+
+    def _docs(self):
+        credit = _doc("Credit Co", [
+            _div("DIV 03 00 00", "Concrete", Decimal("-5000")),
+            _div("DIV 01 00 00", "General Requirements", Decimal("100000")),
+        ], Decimal("95000"))
+        return [credit,
+                _concrete_bidder("Peer One", "200000"),
+                _concrete_bidder("Peer Two", "220000"),
+                _concrete_bidder("Peer Three", "240000")]
+
+    def test_leveled_r22_red_and_fenced_benchmark(self):
+        docs = self._docs()
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, docs)
+            sub_row = _row_of(ws, 2, "CONCRETE SUBTOTAL")
+            col = _col_of(ws, n, "Credit Co")
+            csub = ws.cell(row=sub_row, column=col + LEVELED_CSUB_OFFSET)
+            # Rendered negative — never clamped, never blank.
+            assert csub.value == -5000.0
+            assert _hex(csub) == RED
+            assert "[FALKE R22]" in csub.comment.text
+            assert ("Negative value without deductive-alternate or "
+                    "approved-credit classification — R22.") in csub.comment.text
+            # House accounting format renders negatives in parentheses.
+            assert "(" in csub.number_format
+            # Benchmark: credit fenced (M-2 rule 2) — median over 3 peers.
+            assert ws.cell(row=sub_row, column=_lev_bench_col(n)).value == 220000.0
+            assert ws.cell(row=sub_row, column=_lev_bench_col(n) + 2).value == 3
+            # No VAR% for the unclassified credit.
+            var_cell = ws.cell(row=sub_row, column=col + 4)
+            assert var_cell.value is None
+
+    def test_audit_negative_unclassified_row(self):
+        from src.audit import AuditCode, AuditStatus, audit_bids
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in self._docs()])
+        items = audit_bids(bids)
+        rows = [i for i in items if i.code == AuditCode.NEGATIVE_UNCLASSIFIED]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.contractor_name == "Credit Co"
+        assert row.division_csi == "DIV 03 00 00"
+        assert row.status == AuditStatus.RED
+        assert row.view == "both"
+        assert row.value == "$-5,000"
+        assert "Net negative division subtotal ($-5,000)" in row.message
+        assert "deductive alternate or approved credit (R22)" in row.message
+
+    def test_mirror_renders_credit_and_ties_out(self):
+        from src.audit import audit_bids
+        from src.reconcile import reconcile_written_matrix
+        from src.write_matrix import _col_start
+        docs = self._docs()
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+        items = audit_bids(bids)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "m.xlsx"
+            from src.write_matrix import write_matrix as wm
+            wm(bids, out, _run_inputs(), audit_items=items)
+            wb = openpyxl.load_workbook(out)
+            ws = wb["Bid_Form"]
+            sub_row = _row_of(ws, 2, "CONCRETE SUBTOTAL")
+            col = next(_col_start(i) for i in range(len(docs))
+                       if ws.cell(row=5, column=_col_start(i)).value == "Credit Co")
+            c = ws.cell(row=sub_row, column=col)
+            assert c.value == -5000.0, "mirror renders the credit as submitted"
+            assert "(" in c.number_format, "accounting-negative on the mirror"
+            # Stage 6b lockstep: negative subtotal ties out, zero failures.
+            failures = reconcile_written_matrix(out, bids, len(items))
+            assert failures == [], [f.message for f in failures]
+
+
+class TestEnc5LineTokens:
+    """ENC-5 (W-D): line-level EXCLUDED / BY_OWNER cells inside a division
+    render the bidder's classification token on the leveled sheet — italic,
+    NO paint (severity lives on the AUDIT register)."""
+
+    def _docs(self):
+        mixed = _doc("Mixed Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[
+                     LineItem(description="Wall finishes package",
+                              amount=Decimal("180000")),
+                     LineItem(description="Corridor painting scope",
+                              is_excluded=True),
+                     LineItem(description="Owner appliance package",
+                              is_by_owner_others=True,
+                              by_others_verbatim="NIC — By Others"),
+                 ],
+                 subtotal=Decimal("180000")),
+        ], Decimal("180000"))
+        peer = _doc("Peer Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description="Complete interior scope",
+                                 amount=Decimal("200000"))],
+                 subtotal=Decimal("200000")),
+        ], Decimal("200000"))
+        return [mixed, peer]
+
+    def test_line_tokens_render_italic_unpainted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, self._docs())
+            col = _col_of(ws, n, "Mixed Co")
+
+            excl_row = _row_of(ws, 2, "Corridor painting scope")
+            ec = ws.cell(row=excl_row, column=col)
+            assert ec.value == "Excluded"
+            assert ec.font.italic is True
+            assert _hex(ec) not in (RED, CYAN, YELLOW)
+
+            byo_row = _row_of(ws, 2, "Owner appliance package")
+            bc = ws.cell(row=byo_row, column=col)
+            assert bc.value == "NIC — By Others", "verbatim token (ENC-1)"
+            assert bc.font.italic is True
+            assert _hex(bc) not in (RED, CYAN, YELLOW)
+
+            # The priced line and the division subtotal are untouched.
+            priced_row = _row_of(ws, 2, "Wall finishes package")
+            assert ws.cell(row=priced_row, column=col).value == 180000.0
+            sub_row = _row_of(ws, 2, "FINISHES SUBTOTAL")
+            assert ws.cell(row=sub_row,
+                           column=col + LEVELED_CSUB_OFFSET).value == 180000.0
+
+
+class TestRem2WithinToleranceDisclosure:
+    """W-D refinement (real-set finding): a composition delta INSIDE Falke's
+    max($5, 0.5%) tolerance keeps its REM-2 on-cell disclosure (the
+    real-world $18,500-on-$3.9M within-tolerance shape) but says it is within tolerance
+    (RISK-1) instead of pointing at an AUDIT row that doesn't exist."""
+
+    def test_within_tolerance_delta_disclosed_without_dangling_pointer(self):
+        from src.audit import AuditCode, audit_bids
+        # Stated CCS 3,903,200; displayed divisions sum 3,921,700
+        # (delta 18,500 < tol = 19,516) — DIV 11 subtotal is DERIVED.
+        derived = BidDocument(
+            contractor_name="Baywater Class Co",
+            form_type=FormType.FALKE_STANDARD,
+            bid_document_input_type=InputType.DIGITAL_NATIVE,
+            divisions=[
+                _div("DIV 03 00 00", "Concrete", Decimal("3903200")),
+                _div("DIV 11 00 00", "Equipment", None,
+                     items=[LineItem(description="Scissor lift rental",
+                                     amount=Decimal("18500"))],
+                     cost=CostStructure.ITEMIZED),
+            ],
+            footer=BidFooter(
+                construction_cost_subtotal=Decimal("3903200"),
+                grand_total=Decimal("3903200"),
+                grand_total_confidence=GrandTotalConfidence.LOW,
+            ),
+            qualifications=BidQualifications(),
+            extraction_confidence=ExtractionConfidence.HIGH,
+        )
+        docs = [derived, _concrete_bidder("Peer One", "3900000")]
+        bids = compute_cross_bid_stats([normalize_bid(d) for d in docs])
+        items = audit_bids(bids)
+        # Within tolerance: NO ENC-3 register row…
+        assert not [i for i in items
+                    if i.code == AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY]
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, n = _write(tmp, docs)
+            sub_row = _row_of(ws, 2, "EQUIPMENT SUBTOTAL")
+            cell = ws.cell(row=sub_row,
+                           column=_col_of(ws, n, "Baywater Class Co")
+                           + LEVELED_CSUB_OFFSET)
+            text = cell.comment.text
+            # …but the on-cell disclosure SURVIVES, honestly worded.
+            assert "delta $18,500.00" in text
+            assert "within Falke's max($5, 0.5%) math tolerance" in text
+            assert "RISK-1" in text
+            assert "SUBTOTAL_COMPOSITION_DISCREPANCY" not in text
+            # CCS cell carries no ENC-3 red.
+            ccs_row = _row_of(ws, 2, "CONSTRUCTION COST SUBTOTAL")
+            ccs = ws.cell(row=ccs_row,
+                          column=_col_of(ws, n, "Baywater Class Co"))
+            assert _hex(ccs) != RED

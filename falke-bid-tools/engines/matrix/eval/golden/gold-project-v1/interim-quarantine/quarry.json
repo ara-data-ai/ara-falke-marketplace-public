@@ -1,0 +1,36 @@
+{
+  "contractor_name": "Quarry Bay Builders LLC",
+  "project_name": "Harbor Point Tower II Condominium",
+  "project_address": "4200 Harbor Point Drive, Clearwater, FL 33767",
+  "bid_date": "2026-06-08",
+  "total_gsf": 100000,
+  "form_type": "FALKE_STANDARD",
+  "bid_document_input_type": "DIGITAL_NATIVE",
+  "extraction_confidence": "HIGH",
+  "extraction_warnings": [],
+  "divisions": [
+    {
+      "csi_code": "DIV 03 00 00",
+      "division_name": "Concrete",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "500000.00"
+    }
+  ],
+  "footer": {
+    "construction_cost_subtotal": "500000.00",
+    "general_liability_insurance": null,
+    "builders_risk_insurance": null,
+    "gc_fee": null,
+    "overhead_and_profit": null,
+    "other_fees_subtotal": null,
+    "bond": null,
+    "grand_total": "500000.00",
+    "alternates": [],
+    "grand_total_confidence": "LOW",
+    "confidence_flags": ["GC_FEE_MISSING", "INSURANCE_NOT_STATED"]
+  },
+  "qualifications": {
+    "qualifications": "Concrete restoration scope only."
+  }
+}

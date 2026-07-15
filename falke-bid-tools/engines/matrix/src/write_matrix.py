@@ -52,6 +52,7 @@ from openpyxl.utils import get_column_letter
 from src import falke_rules
 from src import format_falke as ff
 from src.audit import AuditItem, AuditStatus
+from src.normalize import _div_short
 from src.normalized_models import (
     GRAND_TOTAL_COMPONENT_KEYS,
     CellState,
@@ -83,6 +84,10 @@ CONTRACTOR_SEP_WIDTH: float = 4.0
 
 # Number format for dollar amounts
 AMOUNT_FORMAT = "#,##0.00"
+# Accounting-negative variant for net-credit cells on the mirror (W-D ruling
+# 5.2: negatives render in parentheses, never clamped). The leveled sheet's
+# FALKE_AMOUNT_FORMAT already carries the accounting parentheses.
+AMOUNT_FORMAT_NEG = "#,##0.00;(#,##0.00)"
 
 # ---------------------------------------------------------------------------
 # Division and footer row definitions (FEB 26 CSI sequence)
@@ -326,35 +331,37 @@ def _descriptions_match(a: str, b: str) -> bool:
     return overlap >= 0.6
 
 
-def _lookup_item_amount(
+# M-3 (W-D): the mirror's state → rendering table. Numeric states write the
+# number (EXPLICIT_ZERO writes a real 0.00 — the bidder DID write $0;
+# NOT_COMPARABLE writes the number as submitted). Token states write the
+# bidder's classification verbatim (italic, NO fill — the mirror asserts
+# nothing). NULL_BLANK writes NOTHING (truly blank — never 0.00, never "-").
+# Reconcile lockstep: `_as_decimal` coerces blank/token cells to 0 and
+# `_expected_subtotal` maps non-amount-bearing states to 0, so written-blank
+# == expected-0 holds (the false-quarantine guard).
+_MIRROR_LINE_NUMERIC_STATES = (CellState.AMOUNT, CellState.EXPLICIT_ZERO,
+                               CellState.ALLOWANCE, CellState.NOT_COMPARABLE)
+# Subtotal numeric states mirror reconcile._AMOUNT_BEARING_STATES exactly
+# (NC never occurs at subtotal level — normalize resolves NC-composed
+# subtotals to state AMOUNT).
+_MIRROR_SUBTOTAL_NUMERIC_STATES = (CellState.AMOUNT, CellState.EXPLICIT_ZERO,
+                                   CellState.ALLOWANCE)
+_MIRROR_TOKEN_FONT = Font(italic=True)
+
+
+def _lookup_item_cell(
     div: "NormalizedDivision | None",
     target_desc: str,
-) -> Optional[float]:
-    """
-    Return the float amount for target_desc from a NormalizedDivision's
-    line_item_cells.  Tries exact key first, then _descriptions_match.
-    Returns None when no match or state maps to 0.0/blank.
-    """
+) -> "Optional[object]":
+    """Return the CellValue for target_desc from a NormalizedDivision's
+    line_item_cells (exact key first, then _descriptions_match), or None."""
     if div is None:
         return None
-
-    _shown_states = (CellState.AMOUNT, CellState.EXPLICIT_ZERO,
-                     CellState.ALLOWANCE, CellState.NOT_COMPARABLE)
-
-    # Exact match first
     if target_desc in div.line_item_cells:
-        cell = div.line_item_cells[target_desc]
-        if cell.state in _shown_states:
-            return _to_float(cell.amount)
-        return None
-
-    # Fuzzy match
+        return div.line_item_cells[target_desc]
     for key, cell in div.line_item_cells.items():
         if _descriptions_match(target_desc, key):
-            if cell.state in _shown_states:
-                return _to_float(cell.amount)
-            return None
-
+            return cell
     return None
 
 
@@ -484,16 +491,6 @@ def _write_division_rows(
     """
     bold = Font(bold=True)
 
-    # Build per-bid, per-division lookups:
-    #   bid_div_lookup[bid_index][csi_code] = aggregated subtotal float
-    bid_div_lookup: list[dict[str, float]] = []
-    for bid in bids:
-        aggregated: dict[str, float] = {}
-        for div in bid.divisions:
-            amount = _cell_amount(div.subtotal_cell.state, div.subtotal_cell.amount)
-            aggregated[div.csi_code] = aggregated.get(div.csi_code, 0.0) + amount
-        bid_div_lookup.append(aggregated)
-
     row = start_row
     subtotal_row_by_csi: dict[str, int] = {}
 
@@ -535,11 +532,23 @@ def _write_division_rows(
 
             for i, div in enumerate(bid_divs):
                 cost_col = _col_start(i)
-                amount = _lookup_item_amount(div, desc)
-                if amount is not None:
-                    c = ws.cell(row=row, column=cost_col)
-                    c.value = amount
-                    c.number_format = AMOUNT_FORMAT
+                cellv = _lookup_item_cell(div, desc)
+                if cellv is None:
+                    continue
+                c = ws.cell(row=row, column=cost_col)
+                if cellv.state in _MIRROR_LINE_NUMERIC_STATES:
+                    c.value = _to_float(cellv.amount)
+                    c.number_format = (AMOUNT_FORMAT_NEG if c.value < 0
+                                       else AMOUNT_FORMAT)
+                elif cellv.state == CellState.EXCLUDED:
+                    # M-3: "Excluded" italic (verbatim bidder token when
+                    # extraction later carries one — v0.3.1-Q1).
+                    c.value = "Excluded"
+                    c.font = _MIRROR_TOKEN_FONT
+                elif cellv.state == CellState.BY_OWNER_OTHERS:
+                    c.value = (cellv.display or "").strip() or "BY OTHERS"
+                    c.font = _MIRROR_TOKEN_FONT
+                # NULL_BLANK: truly blank — write nothing.
 
             row += 1
 
@@ -554,18 +563,44 @@ def _write_division_rows(
         for i, bid in enumerate(bids):
             cost_col = _col_start(i)
             sf_col = cost_col + 1
-            amount = bid_div_lookup[i].get(csi_code, 0.0)
-            sf_val = round(amount / gsf, 2) if gsf > 0 else 0.0
-
             c_cost = ws.cell(row=row, column=cost_col)
-            c_cost.value = amount
-            c_cost.number_format = AMOUNT_FORMAT
-            c_cost.font = bold
 
-            c_sf = ws.cell(row=row, column=sf_col)
-            c_sf.value = sf_val
-            c_sf.number_format = AMOUNT_FORMAT
-            c_sf.font = bold
+            # M-3 (W-D): render the subtotal per CellState. Numeric states
+            # (AMOUNT / EXPLICIT_ZERO / ALLOWANCE — reconcile's exact
+            # _AMOUNT_BEARING_STATES) write the aggregated number; EXCLUDED /
+            # BY_OWNER write the bidder's token (italic, no fill); absent or
+            # all-NULL_BLANK writes NOTHING (a blank cell means the bidder
+            # left it blank).
+            divs = [d for d in bid.divisions if d.csi_code == csi_code]
+            states = [d.subtotal_cell.state for d in divs]
+
+            if any(s in _MIRROR_SUBTOTAL_NUMERIC_STATES for s in states):
+                amount = sum(
+                    _to_float(d.subtotal_cell.amount) for d in divs
+                    if d.subtotal_cell.state in _MIRROR_SUBTOTAL_NUMERIC_STATES
+                    and d.subtotal_cell.amount is not None
+                )
+                sf_val = round(amount / gsf, 2) if gsf > 0 else 0.0
+                c_cost.value = amount
+                c_cost.number_format = (AMOUNT_FORMAT_NEG if amount < 0
+                                        else AMOUNT_FORMAT)
+                c_cost.font = bold
+                c_sf = ws.cell(row=row, column=sf_col)
+                c_sf.value = sf_val
+                c_sf.number_format = AMOUNT_FORMAT
+                c_sf.font = bold
+            elif CellState.EXCLUDED in states:
+                c_cost.value = "Excluded"
+                c_cost.font = _MIRROR_TOKEN_FONT
+            elif CellState.BY_OWNER_OTHERS in states:
+                token = next(
+                    ((d.subtotal_cell.display or "").strip() for d in divs
+                     if d.subtotal_cell.state == CellState.BY_OWNER_OTHERS),
+                    "",
+                )
+                c_cost.value = token or "BY OTHERS"
+                c_cost.font = _MIRROR_TOKEN_FONT
+            # else: no division / all NULL_BLANK → truly blank cell.
 
         row += 1
 
@@ -706,8 +741,11 @@ def _write_qualifications(
     ws: openpyxl.worksheet.worksheet.Worksheet,
     bids: list[NormalizedBid],
     start_row: int,
-) -> None:
-    """Write one qualifications row per contractor, separated by a blank row."""
+) -> int:
+    """Write one qualifications row per contractor, separated by a blank row.
+
+    Returns the next free row (the workbook LEGEND lands below — W-D B4/§2:
+    on Bid_Form the legend sits below Qualifications)."""
     row = start_row + 1  # +1 blank separator
 
     ws.cell(row=row, column=1).value = "QUALIFICATIONS"
@@ -722,6 +760,7 @@ def _write_qualifications(
         qual_cell = ws.cell(row=row, column=cost_col)
         qual_cell.value = bid.qualifications_text or ""
         qual_cell.alignment = Alignment(wrap_text=True)
+    return row + 1
 
 
 def _set_column_widths(
@@ -766,57 +805,43 @@ _STATUS_SORT_KEY = {
 }
 
 
-def _apply_audit_fills(
-    ws: openpyxl.worksheet.worksheet.Worksheet,
-    bids: list[NormalizedBid],
-    subtotal_row_by_csi: dict[str, int],
-    audit_items: list[AuditItem],
-    view: str = "mirror",
-) -> None:
-    """
-    Color-code SUBTOTAL cells in a data sheet based on audit findings.
+# M-3 / B4 §2 item 2 (W-D): the ARA audit-fill pass is REMOVED from the
+# mirror — the mirror asserts nothing (values/tokens, the col-C Normalization
+# Note, and quarantine marks only). Every ARA diagnostic already lives on the
+# AUDIT sheet; the leveled sheet never used this pass (rules spec §4.4/A1).
 
-    A division subtotal cell is colored by the WORST status of any division-
-    scoped AuditItem for that (contractor, division): RED wins over YELLOW;
-    GREEN triggers no fill. ``view`` selects this sheet's slice (Option C §4):
-    only items whose ``view`` is ``both`` or equals this sheet's ``view`` apply.
 
-    On the mirror (``view="mirror"``) the KNOWN_FIRM_RECLASSIFIED YELLOW belongs
-    on the Normalization Note cell (stamped during division writing), NOT on the
-    division subtotal — the as-submitted subtotal is correct and must not be
-    flagged as if something is wrong with it (§2.4). So that code is excluded
-    from the subtotal-fill index here.
-    """
-    # Build index: (contractor_name, csi_code) → worst AuditStatus.
-    from openpyxl.utils import get_column_letter
-    from src.audit import AuditCode
+# AUDIT View column labels — the actual SHEET NAMES they point at (W-D B4/§2:
+# kills the "As-Submitted" third dialect). ONE constant for the initial write
+# AND the appended quarantine rows so the two can never drift.
+AUDIT_VIEW_LABELS = {
+    "leveled": "Leveled_Normalized",
+    "mirror": "Bid_Form",
+    "both": "Both",
+}
 
-    _STATUS_RANK = {AuditStatus.RED: 0, AuditStatus.YELLOW: 1, AuditStatus.GREEN: 2}
-    worst: dict[tuple[str, str], AuditStatus] = {}
-    for item in audit_items:
-        if item.division_csi is None:
-            continue
-        if item.view not in ("both", view):
-            continue
-        if view == "mirror" and item.code == AuditCode.KNOWN_FIRM_RECLASSIFIED:
-            # YELLOW lives on the Normalization Note cell on the mirror, not here.
-            continue
-        key = (item.contractor_name, item.division_csi)
-        if key not in worst or _STATUS_RANK[item.status] < _STATUS_RANK[worst[key]]:
-            worst[key] = item.status
+# Default AUDIT geometry (W-D S2-3: the key moved to the TOP of the tab).
+# Rows 1-2 title/subtitle, 3 blank, 4-7 the RGY key, 8 the board pointer,
+# 9 blank, 10 column headers, 11+ data. Readers must NOT hardcode these:
+# find_audit_header_row() locates the header by its labels, so the key block
+# and an inserted QUARANTINE line never break the read-back.
+AUDIT_HEADER_ROW = 10
+AUDIT_DATA_START_ROW = 11
 
-    for i, bid in enumerate(bids):
-        cost_col = _col_start(i)
-        col_letter = get_column_letter(cost_col)
-        name = bid.contractor_name
+_AUDIT_BOARD_POINTER = (
+    "Board members: the decision view is Leveled_Normalized. This tab is the "
+    "estimator's log of every check performed."
+)
 
-        for csi_code, subtotal_row in subtotal_row_by_csi.items():
-            status = worst.get((name, csi_code))
-            if status == AuditStatus.RED:
-                ws[f"{col_letter}{subtotal_row}"].fill = RED_FILL
-            elif status == AuditStatus.YELLOW:
-                ws[f"{col_letter}{subtotal_row}"].fill = YELLOW_FILL
-            # GREEN / None: no fill change (default)
+
+def find_audit_header_row(ws) -> Optional[int]:
+    """Locate the AUDIT column-header row by its own labels (col A 'Status',
+    col C 'Code') — label-anchored, same idiom as the data-sheet locators."""
+    for row in range(1, ws.max_row + 1):
+        if (ws.cell(row=row, column=1).value == "Status"
+                and ws.cell(row=row, column=3).value == "Code"):
+            return row
+    return None
 
 
 def _write_audit_sheet(
@@ -826,21 +851,23 @@ def _write_audit_sheet(
     """
     Create and populate the AUDIT worksheet in wb.
 
-    Layout:
+    Layout (W-D S2-3 — key at the TOP):
       Row 1: Title
       Row 2: Subtitle
       Row 3: blank
-      Row 4: Column headers
-      Row 5+: One row per AuditItem sorted RED→YELLOW→GREEN, then contractor, then division
-      (2 blank rows after last item)
-      Summary block: totals by status
+      Rows 4-7: KEY — totals by status (the tally a reader needs FIRST)
+      Row 8: board pointer (the decision view is Leveled_Normalized)
+      Row 9: blank
+      Row 10: Column headers
+      Row 11+: One row per AuditItem sorted RED→YELLOW→GREEN, then
+               contractor, then division
     """
     ws = wb.create_sheet(title="AUDIT")
     bold = Font(bold=True)
 
     # --- Column widths ---
     from openpyxl.utils import get_column_letter
-    col_widths = [10, 14, 28, 30, 16, 35, 18, 60]  # A through H (View col inserted)
+    col_widths = [10, 20, 28, 30, 16, 35, 18, 60]  # A..H (View col carries sheet names)
     for col_idx, width in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
@@ -857,10 +884,32 @@ def _write_audit_sheet(
 
     # --- Row 3: blank ---
 
-    # --- Row 4: Column headers (View column inserted between Status and Code, §4) ---
+    # --- Rows 4-8: the KEY, at the TOP (W-D S2-3) ---
+    red_count    = sum(1 for a in audit_items if a.status == AuditStatus.RED)
+    yellow_count = sum(1 for a in audit_items if a.status == AuditStatus.YELLOW)
+    green_count  = sum(1 for a in audit_items if a.status == AuditStatus.GREEN)
+    total_count  = len(audit_items)
+
+    key_lines = [
+        (f"Total items audited:   {total_count}", None),
+        (f"RED Critical:          {red_count}  — must resolve before award", RED_FILL),
+        (f"YELLOW Review:         {yellow_count}  — verify before finalizing", YELLOW_FILL),
+        (f"GREEN Verified:        {green_count}  — clean", GREEN_FILL),
+        (_AUDIT_BOARD_POINTER, None),
+    ]
+    for i, (text, fill) in enumerate(key_lines):
+        c = ws.cell(row=4 + i, column=1)
+        c.value = text
+        c.font = bold
+        if fill:
+            c.fill = fill
+
+    # --- Row 9: blank ---
+
+    # --- Row 10: Column headers (View column carries the sheet names, §4/W-D) ---
     headers = ["Status", "View", "Code", "Contractor", "Division", "Line Item", "Value", "Message"]
     for col_idx, header in enumerate(headers, start=1):
-        c = ws.cell(row=4, column=col_idx)
+        c = ws.cell(row=AUDIT_HEADER_ROW, column=col_idx)
         c.value = header
         c.font = bold
 
@@ -874,17 +923,14 @@ def _write_audit_sheet(
         ),
     )
 
-    _VIEW_LABEL = {"leveled": "Leveled", "mirror": "As-Submitted", "both": "Both"}
-
-    # --- Rows 5+: One row per AuditItem ---
-    data_start_row = 5
+    # --- Rows 11+: One row per AuditItem ---
     for row_offset, item in enumerate(sorted_items):
-        row = data_start_row + row_offset
+        row = AUDIT_DATA_START_ROW + row_offset
         fill = _STATUS_FILL[item.status]
 
         values = [
             item.status.value,
-            _VIEW_LABEL.get(item.view, item.view),
+            AUDIT_VIEW_LABELS.get(item.view, item.view),
             item.code.value,
             item.contractor_name,
             item.division_csi or "",
@@ -899,28 +945,6 @@ def _write_audit_sheet(
             # Bold the Status cell text
             if col_idx == 1:
                 c.font = Font(bold=True)
-
-    # --- Summary block (2 blank rows after last data row) ---
-    last_data_row = data_start_row + len(sorted_items) - 1
-    summary_start = last_data_row + 3  # 2 blank rows then summary
-
-    red_count    = sum(1 for a in audit_items if a.status == AuditStatus.RED)
-    yellow_count = sum(1 for a in audit_items if a.status == AuditStatus.YELLOW)
-    green_count  = sum(1 for a in audit_items if a.status == AuditStatus.GREEN)
-    total_count  = len(audit_items)
-
-    summary_lines = [
-        (f"Total items audited:   {total_count}", None),
-        (f"RED Critical:          {red_count}  — must resolve before award", RED_FILL),
-        (f"YELLOW Review:         {yellow_count}  — verify before finalizing", YELLOW_FILL),
-        (f"GREEN Verified:        {green_count}  — clean", GREEN_FILL),
-    ]
-    for i, (text, fill) in enumerate(summary_lines):
-        c = ws.cell(row=summary_start + i, column=1)
-        c.value = text
-        c.font = bold
-        if fill:
-            c.fill = fill
 
 
 # ---------------------------------------------------------------------------
@@ -947,15 +971,13 @@ def _populate_data_sheet(
     ordered_bids: list[NormalizedBid],
     gsf: int,
     run: RunInputs,
-    audit_items: Optional[list[AuditItem]],
-    view: str,
     show_notes: bool,
 ) -> list[dict]:
-    """Fill one data worksheet (mirror or leveled) end-to-end.
+    """Fill the Bid_Form mirror worksheet end-to-end.
 
     Returns the per-bid footer summaries (used only for the mirror's report).
-    ``view`` is ``"mirror"`` or ``"leveled"`` and selects the audit-fill slice;
-    ``show_notes`` writes the Col C Normalization Note (mirror only).
+    ``show_notes`` writes the Col C Normalization Note. NO ARA audit fills are
+    applied here (M-3/B4 — the mirror asserts nothing).
     """
     _write_header_rows(ws, ordered_bids, gsf, run)
 
@@ -965,16 +987,19 @@ def _populate_data_sheet(
         notice.font = Font(bold=True, italic=True)
 
     DIVISION_START_ROW = 9
-    next_row, subtotal_row_by_csi = _write_division_rows(
+    next_row, _subtotal_row_by_csi = _write_division_rows(
         ws, ordered_bids, DIVISION_START_ROW, gsf, show_notes=show_notes
     )
 
-    if audit_items:
-        _apply_audit_fills(ws, ordered_bids, subtotal_row_by_csi, audit_items, view=view)
+    # NO ARA audit fills on the mirror (M-3/B4 — the mirror asserts nothing);
+    # every ARA diagnostic lives on the AUDIT sheet.
 
     next_row, footer_summaries = _write_footer_rows(ws, ordered_bids, next_row, gsf)
     next_row = _write_alternates(ws, ordered_bids, next_row)
-    _write_qualifications(ws, ordered_bids, next_row)
+    next_row = _write_qualifications(ws, ordered_bids, next_row)
+    # The ONE workbook LEGEND, identical to the leveled sheet's (W-D B4/§2 —
+    # placed below Qualifications on Bid_Form).
+    _write_workbook_legend(ws, next_row + 1, bold_font=Font(bold=True))
     _set_column_widths(ws, len(ordered_bids))
     return footer_summaries
 
@@ -1204,38 +1229,58 @@ def _populate_leveled_sheet(
             if (cs.state == CellState.AMOUNT and cs.amount is not None)
             else None
         )
-        total = 0.0
-        for c_code, _n in DIVISION_ROWS:
-            kind, amt = falke_rules.div_status(b, c_code)
-            if kind == "priced" and amt is not None:
-                total += amt
-        div_sum_by_name[nm] = total
+        # Same shared sum the ENC-3 composition check consumes — the REM-2
+        # disclosure and the register row can never cite different arithmetic.
+        div_sum_by_name[nm] = falke_rules.displayed_priced_sum(
+            b, [c for c, _n in DIVISION_ROWS]
+        )
 
     def _derived_subtotal_note(nm: str) -> str:
-        text = ("Subtotal DERIVED from priced line items — the bidder's form "
+        text = ("[ARA REM-2] Subtotal DERIVED from priced line items — "
+                "the bidder's form "
                 "showed no stated subtotal for this division (REM-2).")
+        # Composition sentence still discloses any real delta (> $1). Its
+        # AUDIT pointer is honest either way (the W-D fix for the dangling
+        # "see AUDIT" — S2-1): above the Falke tolerance it names the
+        # SUBTOTAL_COMPOSITION_DISCREPANCY row ENC-3 just emitted; within
+        # tolerance it says so and notes the RISK-1 cap conversation instead
+        # of pointing at a row that doesn't exist (the known within-tolerance
+        # $18,500-on-$3.9M shape sits INSIDE max($5, 0.5%)).
         cs_val = stated_cs.get(nm)
         if cs_val is not None and abs(div_sum_by_name[nm] - cs_val) > 1.0:
+            delta = abs(div_sum_by_name[nm] - cs_val)
             text += (
                 f" The bidder's stated Construction Cost Subtotal "
                 f"(${cs_val:,.2f}) does not reconcile to the displayed "
                 f"division subtotals (sum ${div_sum_by_name[nm]:,.2f}, delta "
-                f"${abs(div_sum_by_name[nm] - cs_val):,.2f}) — this derived "
+                f"${delta:,.2f}) — this derived "
                 f"amount may not be carried in the bidder's stated totals; "
-                f"see AUDIT."
             )
+            if delta > falke_rules.tol(cs_val):
+                text += ("see the SUBTOTAL_COMPOSITION_DISCREPANCY row on "
+                         "the AUDIT tab.")
+            else:
+                text += ("within Falke's max($5, 0.5%) math tolerance, so it "
+                         "is not separately flagged on AUDIT (RISK-1 — "
+                         "tolerance cap under discussion with Falke).")
         return text
 
-    def variance_pass(row, statuses, target_col_of, on_subtotal):
+    def variance_pass(row, statuses, target_col_of, on_subtotal,
+                      member_prices=None):
         """R9/R11/R12/R13/R15/R16 on one row; paints target_col_of(name).
 
         Benchmark computes from classified STATE only (A6) — the ``statuses``
         map carries (kind, amount) per bidder and only kind=="priced" enters
-        the median, so a blank/zero/excluded cell can never poison it. Paint
+        the median, so a blank/zero/excluded cell can never poison it. On
+        SUBTOTAL rows the caller passes ``member_prices`` — the ONE M-2
+        median-membership set (falke_rules.median_membership: priced AND
+        amount > 0 AND not R20-failed) — so an R20-failed subtotal keeps its
+        red cell and its VAR% but leaves the median (R7, GOLD-DEV-1). Paint
         requires ≥MIN_BIDS_FOR_PAINT valid bids (Q5/RISK-2); the benchmark
         still displays below that.
         """
-        prices = [amt for (k, amt) in statuses.values() if k == "priced"]
+        prices = (member_prices if member_prices is not None
+                  else [amt for (k, amt) in statuses.values() if k == "priced"])
         if not prices:
             return
         if on_subtotal or len(prices) >= 2:
@@ -1246,7 +1291,10 @@ def _populate_leveled_sheet(
         if bench == 0:
             return
         for nm, (kind, amt) in statuses.items():
-            if kind != "priced":
+            if kind != "priced" or amt is None or amt <= 0:
+                # A net-negative subtotal (unclassified credit, W-D ruling 5)
+                # is not a price: no VAR%, no variance paint — its R22 red and
+                # AUDIT row carry the story.
                 continue
             var = (amt - bench) / bench
             vc = ws.cell(row=row, column=gvar(col_of[nm]))
@@ -1265,8 +1313,8 @@ def _populate_leveled_sheet(
                 tracker.paint(cell, fired, nm)
                 falke_rules.attach_comment(
                     cell,
-                    falke_rules.MSG_CYAN if fired == "cyan"
-                    else falke_rules.MSG_YELLOW,
+                    "[FALKE R12] " + falke_rules.MSG_CYAN if fired == "cyan"
+                    else "[FALKE R13] " + falke_rules.MSG_YELLOW,
                 )
             else:
                 tracker.count_neutral()
@@ -1296,7 +1344,8 @@ def _populate_leveled_sheet(
                         tracker.paint(cell, "red", nm)
                         falke_rules.attach_comment(
                             cell,
-                            falke_rules.MSG_RED + " (Zero value without "
+                            "[FALKE R6] " + falke_rules.MSG_RED
+                            + " (Zero value without "
                             "approved classification — R6.)",
                         )
                 elif kind == "not_comparable" and amt is not None:
@@ -1306,8 +1355,28 @@ def _populate_leveled_sheet(
                     money(row, gsfc(i), _sf(amt))
                     falke_rules.attach_comment(
                         ws.cell(row=row, column=gcost(i)),
-                        "Not Comparable — excluded from benchmark (R7/R8).",
+                        "[ARA NC/R7] Not Comparable — excluded from "
+                        "benchmark (R7/R8).",
                     )
+                elif kind == "excluded":
+                    # ENC-5 (W-D): a line-level exclusion inside a division is
+                    # VISIBLE on the decision view — the bidder's
+                    # classification token, italic, no paint (the legend's
+                    # italic vocabulary; severity lives on the per-line
+                    # EXPLICIT_EXCLUSION RED row of the AUDIT register).
+                    c = ws.cell(row=row, column=gcost(i))
+                    c.value = "Excluded"
+                    c.font = ff.ITALIC_FONT
+                elif kind == "by_owner":
+                    # ENC-5: verbatim by-owner token (ENC-1 doctrine — never
+                    # tell the board a wrong story about who carries scope).
+                    cellv = _lookup_item_cell(
+                        _find_div(lev_by_name[nm], csi), desc)
+                    token = ((cellv.display or "").strip()
+                             if cellv is not None else "")
+                    c = ws.cell(row=row, column=gcost(i))
+                    c.value = token or "By Owner"
+                    c.font = ff.ITALIC_FONT
             n_priced = sum(1 for k, _ in statuses.values() if k == "priced")
             if n_priced >= 2:
                 variance_pass(row, statuses,
@@ -1336,16 +1405,32 @@ def _populate_leveled_sheet(
                 money(row, gsxfx(i), _sf(amt), border=ff.SUBTOTAL_BORDER)
                 csub.fill = ff.AQUA_FILL
                 sxfx.fill = ff.AQUA_FILL
-                fail = falke_rules.r20_math_fail(lev_by_name[nm], csi)
-                if fail:
+                if amt is not None and amt < 0:
+                    # W-D ruling 5.3 (R22 adopted): a net-negative division
+                    # subtotal is LEGAL and rendered (accounting-negative via
+                    # the house format), but with no classification pathway
+                    # yet (Q10) it is an error until classified a deductive
+                    # alternate / approved credit. Fenced from benchmarks by
+                    # M-2 membership (amount > 0); the bidder's own R20/CCS
+                    # arithmetic keeps it.
                     tracker.paint(csub, "red", nm)
                     falke_rules.attach_comment(
                         csub,
-                        falke_rules.MSG_RED
-                        + f" (Submitted subtotal ${fail[0]:,.2f} vs line-item "
-                          f"sum ${fail[1]:,.2f}; delta ${fail[2]:,.2f} > "
-                          f"max($5, 0.5%) — R20.)",
+                        "[FALKE R22] " + falke_rules.MSG_RED
+                        + " (Negative value without deductive-alternate or "
+                          "approved-credit classification — R22.)",
                     )
+                else:
+                    fail = falke_rules.r20_math_fail(lev_by_name[nm], csi)
+                    if fail:
+                        tracker.paint(csub, "red", nm)
+                        falke_rules.attach_comment(
+                            csub,
+                            "[FALKE R20] " + falke_rules.MSG_RED
+                            + f" (Submitted subtotal ${fail[0]:,.2f} vs "
+                              f"line-item sum ${fail[1]:,.2f}; delta "
+                              f"${fail[2]:,.2f} > max($5, 0.5%) — R20.)",
+                        )
             elif kind == "not_comparable":
                 # ENC-2 (division level): a subtotal composed entirely of
                 # Not-Comparable lines is displayed but never benchmarked.
@@ -1355,7 +1440,8 @@ def _populate_leveled_sheet(
                 sxfx.fill = ff.AQUA_FILL
                 falke_rules.attach_comment(
                     csub,
-                    "Not Comparable — excluded from benchmark (R7/R8).",
+                    "[ARA NC/R7] Not Comparable — excluded from benchmark "
+                    "(R7/R8).",
                 )
             elif kind == "by_owner":
                 # ENC-1: render the bidder's VERBATIM classification token
@@ -1366,15 +1452,15 @@ def _populate_leveled_sheet(
                 csub.font = ff.ITALIC_FONT
                 falke_rules.attach_comment(
                     csub,
-                    f"Approved classification: {token} (R3/R6/R8). Excluded "
-                    "from benchmark calculations.",
+                    f"[FALKE R3/R8] Approved classification: {token} "
+                    "(R3/R6/R8). Excluded from benchmark calculations.",
                 )
             elif kind == "excluded":
                 csub.value = "Excluded"
                 tracker.paint(csub, "red", nm)
                 falke_rules.attach_comment(
                     csub,
-                    falke_rules.MSG_RED
+                    "[FALKE R28] " + falke_rules.MSG_RED
                     + " (Exclusion without user approval — R28.)",
                 )
             elif kind == "zero":
@@ -1383,19 +1469,45 @@ def _populate_leveled_sheet(
                 tracker.paint(csub, "red", nm)
                 falke_rules.attach_comment(
                     csub,
-                    falke_rules.MSG_RED + " (Zero value without approved "
+                    "[FALKE R6] " + falke_rules.MSG_RED
+                    + " (Zero value without approved "
                     "classification — R6.)",
                 )
-            elif kind == "missing" and any_priced:
-                tracker.paint(csub, "red", nm)
-                falke_rules.attach_comment(
-                    csub,
-                    falke_rules.MSG_RED + " (No pricing submitted for a "
-                    "division priced by other bidders — R5.)",
-                )
-            # missing & nobody priced: blank aqua band, no paint
+            elif kind == "missing":
+                # GOLD-DEV-8 (Marvin GOLD-DEV-10 ruling (3)): a division THIS
+                # bidder's reclass fully vacated is not a missing scope — it
+                # renders blank with the reclass story on-cell, NEVER an R5
+                # red, even when a peer priced the FROM division. Consumes the
+                # vacated set carried on the normalized view (Floyd W2-4) —
+                # the same per-bidder suppression audit.py already applies.
+                vacated_to = lev_by_name[nm].vacated_by_reclass.get(csi)
+                if vacated_to is not None:
+                    falke_rules.attach_comment(
+                        csub,
+                        f"[ARA RECLASS] Reclassified — this bidder's "
+                        f"{_div_short(csi)} "
+                        f"scope is carried in {_div_short(vacated_to)} on "
+                        f"this view (KNOWN_FIRM_RECLASSIFIED; see Bid_Form "
+                        f"Normalization Note and AUDIT).",
+                    )
+                elif any_priced:
+                    tracker.paint(csub, "red", nm)
+                    falke_rules.attach_comment(
+                        csub,
+                        "[FALKE R5] " + falke_rules.MSG_RED
+                        + " (No pricing submitted for a "
+                        "division priced by other bidders — R5.)",
+                    )
+            # missing & nobody priced & not vacated: blank aqua band, no paint
+        member_prices = [
+            p for p in (
+                falke_rules.median_membership(lev_by_name[nm], csi)
+                for nm in names
+            ) if p is not None
+        ]
         variance_pass(row, statuses,
-                      lambda nm: gcsub(col_of[nm]), on_subtotal=True)
+                      lambda nm: gcsub(col_of[nm]), on_subtotal=True,
+                      member_prices=member_prices)
         # REM-2: disclose engine-DERIVED subtotals on-cell. Runs AFTER the
         # variance pass so an existing cyan/yellow comment is appended to,
         # never overwritten.
@@ -1471,10 +1583,29 @@ def _populate_leveled_sheet(
                         tracker.paint(c1, "red", nm)
                         falke_rules.attach_comment(
                             c1,
-                            falke_rules.MSG_RED
+                            "[FALKE R21] " + falke_rules.MSG_RED
                             + f" (Grand total ${val:,.2f} vs sum of components "
                               f"${expected:,.2f}; delta ${delta:,.2f} > "
                               f"max($5, 0.5%) — R21.)",
+                        )
+                else:
+                    # ENC-3 (S2-1, W-D): the stated CCS must compose from the
+                    # displayed division subtotals at max($5, 0.5%). Same
+                    # shared check as the AUDIT register row
+                    # (SUBTOTAL_COMPOSITION_DISCREPANCY).
+                    comp_fail = falke_rules.composition_check(
+                        lev_by_name[nm],
+                        [c_code for c_code, _n in DIVISION_ROWS],
+                        stated_cs.get(nm),
+                    )
+                    if comp_fail is not None:
+                        tracker.paint(c1, "red", nm)
+                        falke_rules.attach_comment(
+                            c1,
+                            "[FALKE R21] " + falke_rules.MSG_RED
+                            + f" (Construction Cost Subtotal does not compose "
+                              f"from the displayed division subtotals — delta "
+                              f"${comp_fail[1]:,.2f}.)",
                         )
             elif key == "FEES_SUBTOTAL":
                 csub = money(row, gcsub(i), val, border=ff.SUBTOTAL_BORDER)
@@ -1569,32 +1700,9 @@ def _populate_leveled_sheet(
         row += 1
     row += 1
 
-    # --- Legend (R12–R16 vocabulary) + decided rules & assumptions ---
-    ws.cell(row=row, column=2).value = (
-        "LEGEND — FALKE HIGHLIGHT VOCABULARY "
-        "(precedence: Red > Cyan > Yellow > Neutral)")
-    ws.cell(row=row, column=2).font = ff.BOLD_FONT
-    row += 1
-    for fill, text in (
-        (falke_rules.CYAN_FILL,
-         "Cyan — Potentially Underpriced / Requires Scope Confirmation "
-         "(≤ benchmark × 0.80)"),
-        (falke_rules.YELLOW_FILL,
-         "Yellow — Potentially Overpriced / Requires Pricing Clarification "
-         "(≥ benchmark × 1.20)"),
-        (falke_rules.RED_FILL,
-         "Red — Error / Requires Correction (missing/zero/excluded without "
-         "approval; math inconsistency)"),
-        (None,
-         "Neutral — within ±20% of benchmark (no fill on COST cells; house "
-         "aqua band on subtotal cells)"),
-    ):
-        if fill:
-            ws.cell(row=row, column=2).fill = fill
-        ws.cell(row=row, column=3).value = text
-        ws.cell(row=row, column=3).font = ff.BODY_FONT
-        row += 1
-    row += 1
+    # --- Decided rules & assumptions, then the ONE workbook LEGEND below it
+    # (W-D B4/§2: the old Falke-only legend is superseded by the workbook
+    # legend, placed below the assumptions block on this sheet) ---
     ws.cell(row=row, column=2).value = (
         "LEVELING RULE DECISIONS & ASSUMPTIONS IN FORCE "
         "(see FALKE-LEVELING-RULES-SPEC.md)")
@@ -1604,6 +1712,9 @@ def _populate_leveled_sheet(
         ws.cell(row=row, column=2).value = a
         ws.cell(row=row, column=2).font = ff.BODY_FONT
         row += 1
+    row += 1
+    _write_workbook_legend(ws, row, bold_font=ff.BOLD_FONT,
+                           body_font=ff.BODY_FONT)
 
     return tracker.counts
 
@@ -1651,7 +1762,131 @@ _LEVELED_ASSUMPTION_LINES: tuple[str, ...] = (
     "display the bidder's verbatim classification token (ENC-1); "
     "'Not Comparable' amounts are displayed but excluded from every "
     "benchmark median (ENC-2, R7/R8).",
+    "A#14 (M-1, W-D 2026-07-15): Scope-gap register rows (AUDIT) are "
+    "thresholded at field median > $20,000; the R5 red on the leveled sheet "
+    "is threshold-free per the Falke program.",
 )
+
+
+# ---------------------------------------------------------------------------
+# WORKBOOK LEGEND (W-D B4/§2) — ONE identical block on BOTH data sheets
+# ---------------------------------------------------------------------------
+# Marvin's exact content: header + precedence line + 4 sections. Rendered
+# with the swatch in column B and the text in column C (the established
+# legend idiom). The AUDIT-fills bullet's "[soft red/yellow/green swatches]"
+# is rendered as a SINGLE soft-red swatch cell (one swatch column exists;
+# the text itself carries all three severities) — flagged for Marvin's
+# ratification in the W-D report.
+
+LEGEND_HEADER = "LEGEND — READING THIS WORKBOOK (every signal, all three tabs)"
+LEGEND_PRECEDENCE = (
+    "When signals collide on one cell: Quarantine ⚠ overrides all; "
+    "then Red > Cyan > Yellow > Neutral."
+)
+
+# (section title, [(fill or None, text), ...]) — fills resolved at write time.
+_LEGEND_SECTIONS: tuple = (
+    ("Section 1 — Leveling colors (Leveled_Normalized only — the decision view):", (
+        ("falke_red",
+         "Red — Error / Requires Correction: missing pricing, unapproved zero "
+         "or exclusion, or a math inconsistency (R5 / R6 / R20 / R21 / R28)."),
+        ("falke_cyan",
+         "Cyan — Potentially Underpriced (at or below benchmark × 0.80) — "
+         "confirm full scope is included (R12)."),
+        ("falke_yellow",
+         "Yellow — Potentially Overpriced (at or above benchmark × 1.20) — "
+         "confirm pricing basis (R13)."),
+        (None,
+         "Neutral — within ±20% of benchmark: no fill (R15). The aqua band on "
+         "subtotal rows is house formatting, not a signal."),
+        (None,
+         'Italic text ("Excluded", "Not Applicable", …) — the bidder\'s own '
+         "classification, shown verbatim."),
+        (None,
+         "Benchmark = median of valid bids only (R9); coloring requires "
+         "≥3 valid bids (Q5)."),
+    )),
+    ("Section 2 — Bid_Form (the verification view):", (
+        (None,
+         "No leveling colors appear on Bid_Form. Every value and token is "
+         "transcribed as the bidder submitted it; a blank cell means the "
+         "bidder left it blank."),
+        ("soft_yellow",
+         "Normalization Note (column C only) — an estimator recommendation. "
+         "Dollars are NOT moved on this sheet; the move is applied on "
+         "Leveled_Normalized."),
+    )),
+    ("Section 3 — AUDIT (the estimator's diagnostic log):", (
+        # Marvin amendment 2026-07-15 (W-D build item 1): ONE swatch column,
+        # so the ARA severities render THREE rows — one per severity, each
+        # with its own swatch ("a single red swatch captioned red/yellow/
+        # green is exactly the ambiguity the legend exists to kill").
+        ("soft_red",
+         "AUDIT rows filled soft red — ARA severity RED: resolve before "
+         "award. Appears only on the AUDIT tab."),
+        ("soft_yellow_audit",
+         "AUDIT rows filled soft yellow — ARA severity YELLOW: review. "
+         "Appears only on the AUDIT tab."),
+        ("soft_green",
+         "AUDIT rows filled soft green — ARA severity GREEN: verified. "
+         "Appears only on the AUDIT tab."),
+        (None,
+         "Board members: the decision view is Leveled_Normalized. This tab "
+         "is the estimator's log of every check performed."),
+    )),
+    ("Section 4 — Quarantine (may appear on any sheet):", (
+        ("soft_red",
+         '⚠ "does not reconcile to source — verify": the tool\'s own '
+         "post-write self-check failed on this figure. Verify it against the "
+         "submitted bid before any award. Overrides every other signal on "
+         "the cell."),
+    )),
+)
+
+_LEGEND_FILLS = {
+    "falke_red": falke_rules.RED_FILL,
+    "falke_cyan": falke_rules.CYAN_FILL,
+    "falke_yellow": falke_rules.YELLOW_FILL,
+    "soft_yellow": YELLOW_FILL,        # FFF2CC — the Normalization Note hue
+    "soft_yellow_audit": YELLOW_FILL,  # FFF2CC — ARA severity YELLOW swatch
+    "soft_red": RED_FILL,              # FFCCCC — ARA/quarantine soft red
+    "soft_green": GREEN_FILL,          # CCFFCC — ARA severity GREEN swatch
+}
+
+
+def _write_workbook_legend(ws, start_row: int, bold_font=None,
+                           body_font=None) -> int:
+    """Write the ONE workbook LEGEND block (identical content on both data
+    sheets) starting at ``start_row``. Returns the next free row.
+
+    Layout: header (col B, bold) → precedence line (col B) → per section:
+    title (col B, bold) then bullets (swatch col B, text col C).
+    """
+    header_cell = ws.cell(row=start_row, column=2)
+    header_cell.value = LEGEND_HEADER
+    if bold_font is not None:
+        header_cell.font = bold_font
+    row = start_row + 1
+    prec = ws.cell(row=row, column=2)
+    prec.value = LEGEND_PRECEDENCE
+    if body_font is not None:
+        prec.font = body_font
+    row += 1
+    for title, bullets in _LEGEND_SECTIONS:
+        tc = ws.cell(row=row, column=2)
+        tc.value = title
+        if bold_font is not None:
+            tc.font = bold_font
+        row += 1
+        for fill_key, text in bullets:
+            if fill_key is not None:
+                ws.cell(row=row, column=2).fill = _LEGEND_FILLS[fill_key]
+            txt = ws.cell(row=row, column=3)
+            txt.value = text
+            if body_font is not None:
+                txt.font = body_font
+            row += 1
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -1716,7 +1951,7 @@ _QUARANTINE_BANNER_LINE_3 = (
 
 # Cell-comment text — Marvin §2 / §6 (exact string).
 _QUARANTINE_CELL_COMMENT = (
-    "⚠ does not reconcile to source — verify. The tool wrote {written} here; its "
+    "[QUARANTINE] ⚠ does not reconcile to source — verify. The tool wrote {written} here; its "
     "own verified calculation was {expected} (difference {delta}). Check this "
     "figure against {contractor}'s submitted bid before relying on it."
 )
@@ -1789,15 +2024,22 @@ def _shift_merges_and_heights(ws, n: int) -> None:
 
 def _mark_cell(ws, row: int, col: int, written: str, expected: str,
                delta: str, contractor: str) -> None:
-    """RED fill + verify-against-source comment on a single failing cell (§2)."""
+    """RED fill + verify-against-source comment on a single failing cell (§2).
+
+    COMPOSES, never overwrites (Marvin GOLD-DEV-6 ruling (3)): the quarantine
+    fill wins VISUALLY (established precedence: Quarantine > Falke Red), but
+    the quarantine text PREPENDS above any existing comment so a tool defect
+    landing on an already-flagged cell (e.g. an R21 red) never erases the
+    bid-level story.
+    """
     cell = ws.cell(row=row, column=col)
-    cell.fill = RED_FILL
-    cell.comment = Comment(
-        _QUARANTINE_CELL_COMMENT.format(
-            written=written, expected=expected, delta=delta, contractor=contractor,
-        ),
-        "FALKE Stage 6b",
+    text = _QUARANTINE_CELL_COMMENT.format(
+        written=written, expected=expected, delta=delta, contractor=contractor,
     )
+    if cell.comment is not None and cell.comment.text:
+        text = text + "\n\n--- prior flag on this cell ---\n" + cell.comment.text
+    cell.fill = RED_FILL
+    cell.comment = Comment(text, "FALKE Stage 6b")
 
 
 def _fmt_q(amount: Decimal) -> str:
@@ -2030,9 +2272,6 @@ def _quarantine_figure_count(failures: list[AuditItem]) -> Optional[int]:
     return len(figures)
 
 
-_AUDIT_VIEW_LABEL = {"leveled": "Leveled", "mirror": "As-Submitted", "both": "Both"}
-
-
 def _append_audit_failure_rows(
     wb: openpyxl.Workbook,
     failures: list[AuditItem],
@@ -2041,10 +2280,12 @@ def _append_audit_failure_rows(
 
     The banner Line 3 tells the board to "filter the Code column for
     POST_WRITE_TIEOUT_FAILURE" — so each tie-out failure must appear as a RED row
-    on the AUDIT tab. Rows are inserted at the END of the existing data region
-    (just before the 2 blank rows + summary block), matching the 8-column layout
-    written by ``_write_audit_sheet`` (Status, View, Code, Contractor, Division,
-    Line Item, Value, Message). All tie-out failures are RED.
+    on the AUDIT tab. Rows are inserted at the END of the existing data region,
+    matching the 8-column layout written by ``_write_audit_sheet`` (Status,
+    View, Code, Contractor, Division, Line Item, Value, Message). The data
+    region is located from the header row (label-anchored,
+    ``find_audit_header_row``) so the top-of-tab key never breaks it. All
+    tie-out failures are RED.
 
     NOTE: this runs AFTER reconcile's check-4 (audit-row parity), which counted
     only the Stage-5b rows — so appending here does not retroactively trip parity.
@@ -2053,8 +2294,11 @@ def _append_audit_failure_rows(
         return
     ws = wb["AUDIT"]
 
-    # Locate the end of the contiguous data region (col-A non-empty from row 5).
-    row = 5
+    header_row = find_audit_header_row(ws)
+    if header_row is None:
+        return
+    # Locate the end of the contiguous data region below the header.
+    row = header_row + 1
     while ws.cell(row=row, column=1).value not in (None, ""):
         row += 1
     insert_at = row  # first blank row after the data region
@@ -2064,7 +2308,7 @@ def _append_audit_failure_rows(
         r = insert_at + offset
         values = [
             f.status.value,
-            _AUDIT_VIEW_LABEL.get(f.view, f.view),
+            AUDIT_VIEW_LABELS.get(f.view, f.view),
             f.code.value,
             f.contractor_name,
             f.division_csi or "",
@@ -2225,9 +2469,9 @@ def write_matrix(
     ws = wb.active
     ws.title = "Bid_Form"
 
-    # Mirror: as-submitted, Normalization Notes shown, mirror audit slice.
+    # Mirror: as-submitted, Normalization Notes shown, NO ARA fills (M-3/B4).
     footer_summaries = _populate_data_sheet(
-        ws, ordered_bids, gsf, run, audit_items, view="mirror", show_notes=True
+        ws, ordered_bids, gsf, run, show_notes=True
     )
 
     # Leveled_Normalized: moved dollars applied, FEB 26 geometry + house format

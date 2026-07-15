@@ -279,6 +279,74 @@ def line_status(bid: NormalizedBid, csi: str, desc: str) -> tuple[str, Optional[
     return "missing", None
 
 
+def median_membership(bid: NormalizedBid, csi: str) -> Optional[float]:
+    """M-2 (W-D): the ONE median-membership rule for division subtotals.
+
+    A bidder's division subtotal enters ANY cross-bid median — the leveled
+    benchmark block, variance paint, audit-side medians, and scope-gap value
+    strings — iff ALL of:
+
+      1. ``div_status(bid, csi)`` kind == "priced" (state-classified, A6 —
+         NC-composed / EXPLICIT_ZERO / EXCLUDED / BY_OWNER / blank are already
+         fenced by state);
+      2. amount > 0 (a zero or net-negative subtotal is not a market price
+         for the scope — W-D ruling 5);
+      3. not R20-failed (``r20_math_fail`` is None) — the outstanding half of
+         R7: "invalid/red-flagged values are EXCLUDED from benchmark
+         calculations until corrected or user-approved". The red row/paint
+         remain; only median membership drops (closes GOLD-DEV-1).
+
+    Deliberately the SAME set as the sheet (allowances IN — Q4). Returns the
+    aggregated amount when the subtotal is a member, else None. Pre-rules the
+    W-G "single stats brain" consolidation; ``audit._compute_division_medians``
+    and the writer's subtotal benchmark/variance pass both consume it.
+    """
+    kind, amt = div_status(bid, csi)
+    if kind != "priced" or amt is None or amt <= 0:
+        return None
+    if r20_math_fail(bid, csi) is not None:
+        return None
+    return amt
+
+
+def displayed_priced_sum(bid: NormalizedBid, division_codes: list[str]) -> float:
+    """Σ of the division subtotals displayed as PRICES on the leveled sheet
+    (``div_status`` kind == "priced", aggregated per canonical division).
+
+    This is the bidder's displayed base-scope total: classified divisions
+    (Excluded / By-Owner / Not-Comparable-composed) and blank/zero divisions
+    contribute nothing; a net-negative priced subtotal (a credit) is included
+    — the bidder's own arithmetic keeps it (W-D ruling 5.5). Shared by the
+    REM-2 on-cell disclosure and the ENC-3 composition check so the two can
+    never cite different sums.
+    """
+    total = 0.0
+    for csi in division_codes:
+        kind, amt = div_status(bid, csi)
+        if kind == "priced" and amt is not None:
+            total += amt
+    return total
+
+
+def composition_check(
+    bid: NormalizedBid,
+    division_codes: list[str],
+    stated_ccs: Optional[float],
+) -> Optional[tuple[float, float]]:
+    """ENC-3 (S2-1): Σ displayed division subtotals vs the bidder's STATED
+    Construction Cost Subtotal, at the Falke math tolerance max($5, 0.5%)
+    (R21-class — the $18,500 composition hole).
+
+    Returns (displayed_sum, delta) when the check FAILS, else None. Skips
+    (None) when the bidder stated no CCS — there is nothing to compose to.
+    """
+    if stated_ccs is None:
+        return None
+    total = displayed_priced_sum(bid, division_codes)
+    delta = abs(total - stated_ccs)
+    return (total, delta) if delta > tol(stated_ccs) else None
+
+
 def r20_math_fail(bid: NormalizedBid, csi: str) -> Optional[tuple[float, float, float]]:
     """R20: division subtotal vs line-item sum beyond max($5, 0.5%).
 

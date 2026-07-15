@@ -1,0 +1,81 @@
+{
+  "contractor_name": "Beacon Shoreline Builders Inc.",
+  "project_name": "Harbor Point Tower II Condominium",
+  "project_address": "4200 Harbor Point Drive, Clearwater, FL 33767",
+  "bid_date": "2026-06-02",
+  "total_gsf": 100000,
+  "form_type": "FALKE_STANDARD",
+  "bid_document_input_type": "DIGITAL_NATIVE",
+  "extraction_confidence": "HIGH",
+  "extraction_warnings": [],
+  "divisions": [
+    {
+      "csi_code": "DIV 01 00 00",
+      "division_name": "General Requirements",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Project management & site supervision", "amount": "60000.00"},
+        {"description": "Temporary facilities & protection", "amount": "30000.00"}
+      ],
+      "division_subtotal": "90000.00"
+    },
+    {
+      "csi_code": "DIV 03 00 00",
+      "division_name": "Concrete",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "520000.00"
+    },
+    {
+      "csi_code": "DIV 07 00 00",
+      "division_name": "Thermal & Moisture Protection",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Balcony & walkway deck waterproofing systems", "amount": "300000.00"},
+        {"description": "Exterior joint sealants & deck coating replacement", "amount": "60000.00"},
+        {
+          "description": "Sealant & coating material allowance",
+          "amount": "40000.00",
+          "is_allowance": true,
+          "allowance_basis": "final coating system selection by owner"
+        }
+      ],
+      "division_subtotal": "400000.00"
+    },
+    {
+      "csi_code": "DIV 09 00 00",
+      "division_name": "Finishes",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Interior corridor painting", "amount": null, "is_excluded": true},
+        {"description": "Lobby flooring & base", "amount": null, "is_excluded": true}
+      ],
+      "division_subtotal": "0.00"
+    },
+    {
+      "csi_code": "DIV 11 00 00",
+      "division_name": "Equipment",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Dumpster rental & waste hauling", "amount": "12000.00"}
+      ],
+      "division_subtotal": "12000.00"
+    }
+  ],
+  "footer": {
+    "construction_cost_subtotal": "1022000.00",
+    "general_liability_insurance": null,
+    "builders_risk_insurance": null,
+    "gc_fee": "60000.00",
+    "overhead_and_profit": null,
+    "other_fees_subtotal": "35000.00",
+    "bond": null,
+    "grand_total": "1117000.00",
+    "alternates": [],
+    "grand_total_confidence": "MEDIUM",
+    "confidence_flags": ["INSURANCE_NOT_STATED"]
+  },
+  "qualifications": {
+    "exclusions": "Interior finishes (Division 9) excluded from this proposal — see bid form. Insurance carried within Other Fees line."
+  }
+}

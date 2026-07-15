@@ -1,0 +1,68 @@
+{
+  "contractor_name": "Eastline Mechanical & Restoration Corp",
+  "project_name": "Harbor Point Tower II Condominium",
+  "project_address": "4200 Harbor Point Drive, Clearwater, FL 33767",
+  "bid_date": "2026-06-05",
+  "total_gsf": null,
+  "form_type": "CONTRACTOR_OWN",
+  "bid_document_input_type": "DIGITAL_NATIVE",
+  "extraction_confidence": "HIGH",
+  "extraction_warnings": [],
+  "divisions": [
+    {
+      "csi_code": "01",
+      "division_name": "General Conditions",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "80000.00"
+    },
+    {
+      "csi_code": "03",
+      "division_name": "Concrete Restoration",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "450000.00"
+    },
+    {
+      "csi_code": "07",
+      "division_name": "Waterproofing & Roofing",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "380000.00"
+    },
+    {
+      "csi_code": "09",
+      "division_name": "Finishes",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "190000.00"
+    },
+    {
+      "csi_code": "15",
+      "division_name": "Mechanical",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Domestic water distribution renewal, phases 1-3", "amount": "150000.00"},
+        {"description": "Sanitary waste stack repairs, common areas", "amount": "90000.00"},
+        {"description": "General building systems contingency", "amount": "25000.00"}
+      ],
+      "division_subtotal": "265000.00"
+    }
+  ],
+  "footer": {
+    "construction_cost_subtotal": "1365000.00",
+    "general_liability_insurance": "14000.00",
+    "builders_risk_insurance": null,
+    "gc_fee": "68250.00",
+    "overhead_and_profit": null,
+    "other_fees_subtotal": null,
+    "bond": null,
+    "grand_total": "1447250.00",
+    "alternates": [],
+    "grand_total_confidence": "HIGH",
+    "confidence_flags": []
+  },
+  "qualifications": {
+    "notes": "Proposal submitted on our standard cost-code schedule (CSI 1995 2-digit divisions). Insurance (17-020) and fee (17-040) carried as separate schedule lines."
+  }
+}

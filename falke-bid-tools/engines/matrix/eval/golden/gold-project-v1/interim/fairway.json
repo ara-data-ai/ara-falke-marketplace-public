@@ -1,0 +1,83 @@
+{
+  "contractor_name": "Fairway Building Group Inc.",
+  "project_name": "Harbor Point Tower II Condominium",
+  "project_address": "4200 Harbor Point Drive, Clearwater, FL 33767",
+  "bid_date": "2026-06-06",
+  "total_gsf": 100000,
+  "form_type": "FALKE_STANDARD",
+  "bid_document_input_type": "DIGITAL_NATIVE",
+  "extraction_confidence": "HIGH",
+  "extraction_warnings": [],
+  "divisions": [
+    {
+      "csi_code": "DIV 01 00 00",
+      "division_name": "General Requirements",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "110000.00"
+    },
+    {
+      "csi_code": "DIV 02 00 00",
+      "division_name": "Existing Conditions",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {
+          "description": "Site demolition & clearing",
+          "amount": null,
+          "is_by_owner_others": true,
+          "by_others_verbatim": "Not Applicable"
+        }
+      ],
+      "division_subtotal": null
+    },
+    {
+      "csi_code": "DIV 03 00 00",
+      "division_name": "Concrete",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Garage level spall & delamination repair", "amount": "250000.00"},
+        {"description": "Building expansion joint replacement", "amount": "60000.00"}
+      ],
+      "division_subtotal": null
+    },
+    {
+      "csi_code": "DIV 07 00 00",
+      "division_name": "Thermal & Moisture Protection",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "360000.00"
+    },
+    {
+      "csi_code": "DIV 09 00 00",
+      "division_name": "Finishes",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {
+          "description": "Unit interior refresh package (owner option)",
+          "amount": "145000.00",
+          "is_not_comparable": true,
+          "notes": "Owner-option pricing carried separately; not included in base bid totals."
+        }
+      ],
+      "division_subtotal": null
+    }
+  ],
+  "footer": {
+    "construction_cost_subtotal": "780000.00",
+    "general_liability_insurance": "10000.00",
+    "builders_risk_insurance": "5000.00",
+    "gc_fee": "30000.00",
+    "overhead_and_profit": null,
+    "other_fees_subtotal": "45000.00",
+    "bond": "8000.00",
+    "grand_total": "833000.00",
+    "alternates": [
+      {"description": "DEDUCT ALTERNATE 1 — Delete garage deck coating", "amount": "-25000.00"}
+    ],
+    "grand_total_confidence": "HIGH",
+    "confidence_flags": []
+  },
+  "qualifications": {
+    "assumptions": "Owner-option interior refresh package priced separately and excluded from base bid totals. Total Fees line on our form is a memo roll-up of GL, Builders Risk and Fee shown above it."
+  }
+}

@@ -1,0 +1,9 @@
+# GOLDEN-SET v1 — synthetic gold project identity (PUBLIC-SAFE).
+# Project, address, bidders, and every figure are FICTIONAL. No real Falke
+# client, contractor, or price appears anywhere in gold-project-v1/.
+# Authored by Marvin (bid-leveling domain authority), 2026-07-14.
+project_name: "Harbor Point Tower II Condominium"
+project_address: "4200 Harbor Point Drive, Clearwater, FL 33767 (SYNTHETIC FIXTURE)"
+gross_sf: 100000
+sf_basis_label: "GSF"
+rfp_label: "GOLD-SET v1 — synthetic public-safe fixture"

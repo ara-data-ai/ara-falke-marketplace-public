@@ -34,8 +34,14 @@ from src.firm_config import (
     Reclassification,
     load_known_firms,
 )
-from src.normalize import build_normalized_view, compute_cross_bid_stats, normalize_bid
-from src.normalized_models import CellState, NormalizedBid
+from src.normalize import (
+    SUBTOTAL_SUM_STATES,
+    _apply_reclass_moves,
+    build_normalized_view,
+    compute_cross_bid_stats,
+    normalize_bid,
+)
+from src.normalized_models import CellState, NormalizedBid, ReclassRecommendation
 
 
 def _synthetic_firm_config() -> KnownFirmsConfig:
@@ -448,38 +454,41 @@ class TestRule2CodeFormatRemap:
         assert "CODE_FORMAT_REMAPPED" not in flag_types
         assert "UNRECOGNIZED_CODE_FORMAT" not in flag_types
 
-    def test_csi_remap_survives_with_scaffold_only_no_overlay(self):
-        """Safe-absent (spec §4): with ONLY the shipped scaffold loaded (no local
-        overlay → empty match set), a legacy-format bid is STILL losslessly
-        remapped. The csi_1995_2digit remap is signature-detected and
-        name-independent — it never depended on a firm-name match."""
-        scaffold_only = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
-        # the scaffold's sole firm is inert -> nothing matches, whatever the name
-        assert scaffold_only.match("Any Contractor LLC").firm is None
+    def test_csi_remap_is_signature_driven_no_firm_match(self):
+        """The csi_1995_2digit remap is signature-detected and name-independent:
+        a legacy-format bid whose contractor matches NO firm in the shipped
+        library is STILL losslessly remapped. (The remap never depended on a
+        firm-name match — so it also holds on any machine without a local
+        overlay.)"""
+        shipped_cfg = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
+        # this contractor matches no firm in the shipped library, whatever it carries
+        assert shipped_cfg.match("Generic Legacy Co").firm is None
         doc = _legacy_bid([
             _legacy_div("13", "Special Construction", subtotal=Decimal("35000")),
             _legacy_div("03", "Concrete", subtotal=Decimal("100000")),
             _legacy_div("15", "Mechanical", cost_structure=CostStructure.ITEMIZED,
                         line_items=[LineItem(description="HVAC ductwork", amount=Decimal("80000"))]),
         ])
-        bid = normalize_bid(doc, known_firms=scaffold_only)
+        bid = normalize_bid(doc, known_firms=shipped_cfg)
         csi_codes = [d.csi_code for d in bid.divisions]
         assert "DIV 21 00 00" in csi_codes    # legacy 13 remapped by signature
         assert "DIV 13 00 00" not in csi_codes
         assert "CODE_FORMAT_REMAPPED" in [f.flag_type for f in bid.summary_flags]
 
-    def test_would_be_reclass_firm_degrades_safe_scaffold_only(self):
-        """DEGRADED-SAFE (public scaffold, no overlay): a bid from a firm that a
-        LOCAL overlay WOULD reclassify (here: a legacy-format bid carrying a
-        DIV 11 dumpster line — the classic 'move dumpster to DIV 01' quirk) is,
-        with only the shipped scaffold loaded, mirrored AS-SUBMITTED: NO
-        firm-specific reclassification is applied (no destructive dollar move),
-        because no firm matches. The name-independent csi_1995_2digit signature
-        remap STILL fires. This is the exact behavior for a would-be-known-firm
-        bid on the public build — leveled correctly, dumpster not silently moved."""
-        scaffold_only = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
-        # No firm in the scaffold matches this (or any real) contractor name.
-        assert scaffold_only.match("Some Restoration Contractor").firm is None
+    def test_would_be_reclass_firm_degrades_safe_when_unmatched(self):
+        """DEGRADED-SAFE: a bid carrying a classic known-firm quirk (a legacy-
+        format bid with a DIV 11 dumpster line — the 'move dumpster to DIV 01'
+        move) from a contractor that matches NO firm in the loaded library is
+        mirrored AS-SUBMITTED: NO firm-specific reclassification is applied (no
+        destructive dollar move), because no firm matches. The name-independent
+        csi_1995_2digit signature remap STILL fires. This is exactly the
+        public-scaffold (no overlay) behavior for a would-be-known-firm bid,
+        and equally the unknown-firm behavior on the private build — leveled
+        correctly, dumpster not silently moved."""
+        library = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
+        # This contractor matches no firm in the shipped library on EITHER
+        # head (scaffold: match set empty; private: no term is a substring).
+        assert library.match("Some Restoration Contractor").firm is None
         doc = _legacy_bid([
             _legacy_div("13", "Special Construction", subtotal=Decimal("35000")),
             _legacy_div("15", "Mechanical", cost_structure=CostStructure.ITEMIZED,
@@ -487,7 +496,7 @@ class TestRule2CodeFormatRemap:
             _legacy_div("11", "Equipment", cost_structure=CostStructure.ITEMIZED,
                         line_items=[LineItem(description="Dumpsters", amount=Decimal("6500"))]),
         ])
-        bid = normalize_bid(doc, known_firms=scaffold_only)
+        bid = normalize_bid(doc, known_firms=library)
         # Degraded-safe: the dumpster is NOT reclassified — no move recommendation.
         assert bid.reclass_recommendations == []
         # Signature remap still fires name-independently (legacy 13 -> DIV 21).
@@ -652,6 +661,297 @@ class TestRule3FirmReclassifications:
         leveled = build_normalized_view(bid, doc)
         lev09 = next((d for d in leveled.divisions if d.csi_code == "DIV 09 00 00"), None)
         assert lev09 is not None
+
+
+# ---------------------------------------------------------------------------
+# GOLD-DEV-10 — reclass touched-set semantics + the shared subtotal state table
+# ---------------------------------------------------------------------------
+
+class TestReclassTouchedSetSemantics:
+    """GOLD-DEV-10 fix (Marvin ruling, 2026-07-15): _apply_reclass_moves
+    rebuilds ONLY the touched from/to divisions; every other division passes
+    through byte-identical (stated subtotal, cost structure, REM-1 $0s
+    intact). Shapes (a)/(b)/(c) from the finding are pinned here so the
+    golden set does not have to carry all three."""
+
+    CFG = _synthetic_firm_config()
+
+    def _reclass_doc(self, extra_divisions: list[DivisionBid]) -> BidDocument:
+        """ACME doc with the dumpster reclass armed (DIV 11 → DIV 01) plus
+        untouched divisions carrying the GOLD-DEV-10 danger shapes."""
+        return _minimal_doc(
+            contractor_name="Acme Restoration LLC",
+            divisions=[
+                _div("DIV 01 00 00", "General Requirements",
+                     line_items=[LineItem(description="Project Management",
+                                          amount=Decimal("40000"))],
+                     subtotal=Decimal("40000")),
+                _div("DIV 11 00 00", "Equipment",
+                     line_items=[LineItem(description="Dumpsters",
+                                          amount=Decimal("6500"))],
+                     subtotal=Decimal("6500")),
+                *extra_divisions,
+            ],
+        )
+
+    def test_shape_a_untouched_stated_subtotal_and_r20_survive(self):
+        """Shape (a): an untouched ITEMIZED division's STATED subtotal (508,000
+        over lines summing 500,000) survives the leveled view — the R20 math
+        error must NOT self-heal for a reclass-matched bidder."""
+        doc = self._reclass_doc([
+            _div("DIV 03 00 00", "Concrete",
+                 line_items=[LineItem(description="Garage slab repairs",
+                                      amount=Decimal("500000"))],
+                 subtotal=Decimal("508000")),
+        ])
+        bid = normalize_bid(doc, known_firms=self.CFG)
+        leveled = build_normalized_view(bid, doc)
+        div03 = next(d for d in leveled.divisions if d.csi_code == "DIV 03 00 00")
+        assert div03.subtotal_cell.amount == Decimal("508000")
+        assert "ARITHMETIC_DISCREPANCY" in div03.subtotal_cell.flags
+
+    def test_shape_b_untouched_allowance_division_not_understated(self):
+        """Shape (b): an untouched allowance-bearing ITEMIZED division keeps
+        its stated 400,000 (360,000 + 40,000 ALLOW) — no understated 360,000,
+        no false discrepancy."""
+        doc = self._reclass_doc([
+            _div("DIV 07 00 00", "Thermal & Moisture Protection",
+                 line_items=[
+                     LineItem(description="Deck waterproofing",
+                              amount=Decimal("360000")),
+                     LineItem(description="Coating material allowance",
+                              amount=Decimal("40000"), is_allowance=True),
+                 ],
+                 subtotal=Decimal("400000")),
+        ])
+        bid = normalize_bid(doc, known_firms=self.CFG)
+        leveled = build_normalized_view(bid, doc)
+        div07 = next(d for d in leveled.divisions if d.csi_code == "DIV 07 00 00")
+        assert div07.subtotal_cell.amount == Decimal("400000")
+        assert "ARITHMETIC_DISCREPANCY" not in div07.subtotal_cell.flags
+
+    def test_shape_c_untouched_stated_zero_stays_explicit_zero(self):
+        """Shape (c): an untouched stated-$0 division (REM-1 EXPLICIT_ZERO
+        over Excluded lines) keeps its verified-$0 story on the leveled view —
+        never NULL_BLANK / scope-gap."""
+        doc = self._reclass_doc([
+            _div("DIV 09 00 00", "Finishes",
+                 line_items=[
+                     LineItem(description="Corridor painting", is_excluded=True),
+                     LineItem(description="Lobby flooring", is_excluded=True),
+                 ],
+                 subtotal=Decimal("0")),
+        ])
+        bid = normalize_bid(doc, known_firms=self.CFG)
+        leveled = build_normalized_view(bid, doc)
+        div09 = next(d for d in leveled.divisions if d.csi_code == "DIV 09 00 00")
+        assert div09.subtotal_cell.state == CellState.EXPLICIT_ZERO
+        assert div09.subtotal_cell.amount == Decimal("0")
+
+    def test_touched_pair_rederives_with_full_inclusion_table(self):
+        """The touched TO division re-derives from its post-move lines using
+        the SAME inclusion table as _resolve_subtotal_cell: allowance and
+        not-comparable amounts IN, by-owner/excluded OUT."""
+        divisions = [
+            _div("DIV 11 00 00", "Equipment",
+                 line_items=[LineItem(description="Dumpsters",
+                                      amount=Decimal("18000"))],
+                 subtotal=Decimal("18000")),
+            _div("DIV 01 00 00", "General Requirements",
+                 line_items=[
+                     LineItem(description="Supervision", amount=Decimal("30000")),
+                     LineItem(description="Temp facilities allowance",
+                              amount=Decimal("5000"), is_allowance=True),
+                     LineItem(description="Owner option package",
+                              amount=Decimal("2000"), is_not_comparable=True),
+                     LineItem(description="Owner-carried permits",
+                              is_by_owner_others=True),
+                     LineItem(description="Declined scope", is_excluded=True),
+                 ],
+                 subtotal=Decimal("37000")),
+        ]
+        recs = [ReclassRecommendation(
+            line_item_desc="Dumpsters",
+            from_division="DIV 11 00 00", to_division="DIV 01 00 00",
+            to_division_name="General Requirements",
+            amount=Decimal("18000"), rule_id="ACME_DUMPSTER",
+        )]
+        moved = _apply_reclass_moves(divisions, recs)
+        by_code = {d.csi_code: d for d in moved}
+        # TO: 30,000 + 5,000 ALLOW + 2,000 NC + 18,000 moved = 55,000.
+        assert by_code["DIV 01 00 00"].division_subtotal == Decimal("55000")
+        # FROM: fully vacated → None (NULL_BLANK downstream).
+        assert by_code["DIV 11 00 00"].division_subtotal is None
+
+    def test_untouched_division_passes_through_byte_identical(self):
+        """Untouched divisions are the ORIGINAL DivisionBid objects — not
+        copies with re-derived fields."""
+        untouched = _div("DIV 03 00 00", "Concrete",
+                         line_items=[LineItem(description="Slab repairs",
+                                              amount=Decimal("500000"))],
+                         subtotal=Decimal("508000"))
+        divisions = [
+            _div("DIV 11 00 00", "Equipment",
+                 line_items=[LineItem(description="Dumpsters",
+                                      amount=Decimal("6500"))],
+                 subtotal=Decimal("6500")),
+            untouched,
+        ]
+        recs = [ReclassRecommendation(
+            line_item_desc="Dumpsters",
+            from_division="DIV 11 00 00", to_division="DIV 01 00 00",
+            to_division_name="General Requirements",
+            amount=Decimal("6500"), rule_id="ACME_DUMPSTER",
+        )]
+        moved = _apply_reclass_moves(divisions, recs)
+        by_code = {d.csi_code: d for d in moved}
+        assert by_code["DIV 03 00 00"] is untouched
+        assert by_code["DIV 03 00 00"].division_subtotal == Decimal("508000")
+
+    def test_vacated_by_reclass_property_carried_on_view(self):
+        """Floyd W2-4: the vacated set is derived ONCE on the normalized view
+        (from → to), for both audit.py and write_matrix.py to consume."""
+        doc = self._reclass_doc([])
+        bid = normalize_bid(doc, known_firms=self.CFG)
+        assert bid.vacated_by_reclass == {"DIV 11 00 00": "DIV 01 00 00"}
+
+    def test_from_division_net_negative_remainder_survives(self):
+        """C-W4-3 regression (Floyd probe B3, W-D ruling 5.1): a from-division
+        retaining a NET-NEGATIVE remainder (a credit line) after the move
+        keeps its negative subtotal — the sign-aware gate (`!= 0`) must never
+        silently blank a credit (R33)."""
+        divisions = [
+            _div("DIV 11 00 00", "Equipment",
+                 line_items=[
+                     LineItem(description="Dumpsters", amount=Decimal("20000")),
+                     LineItem(description="Equipment credit",
+                              amount=Decimal("-5000")),
+                 ],
+                 subtotal=Decimal("15000")),
+            _div("DIV 01 00 00", "General Requirements",
+                 line_items=[LineItem(description="Supervision",
+                                      amount=Decimal("300000"))],
+                 subtotal=Decimal("300000")),
+        ]
+        recs = [ReclassRecommendation(
+            line_item_desc="Dumpsters",
+            from_division="DIV 11 00 00", to_division="DIV 01 00 00",
+            to_division_name="General Requirements",
+            amount=Decimal("20000"), rule_id="ACME_DUMPSTER",
+        )]
+        moved = _apply_reclass_moves(divisions, recs)
+        by_code = {d.csi_code: d for d in moved}
+        # FROM keeps the −5,000 credit (never blanked to None).
+        assert by_code["DIV 11 00 00"].division_subtotal == Decimal("-5000")
+        # TO gains the moved 20,000; division-sum is conserved (315,000).
+        assert by_code["DIV 01 00 00"].division_subtotal == Decimal("320000")
+        total = sum(d.division_subtotal for d in moved
+                    if d.division_subtotal is not None)
+        assert total == Decimal("315000")
+
+    def test_derived_subtotal_sign_aware_gate(self):
+        """W-D ruling 5.1 on _resolve_subtotal_cell: derived ≠ 0 → AMOUNT
+        (negative included); derived 0 → NULL_BLANK (REM-1 unchanged)."""
+        neg_doc = _minimal_doc(
+            contractor_name="Credit Deriver",
+            divisions=[_div("DIV 03 00 00", "Concrete",
+                            line_items=[
+                                LineItem(description="Base work",
+                                         amount=Decimal("10000")),
+                                LineItem(description="Scope credit",
+                                         amount=Decimal("-15000")),
+                            ],
+                            subtotal=None)],
+        )
+        bid = normalize_bid(neg_doc)
+        cell = bid.divisions[0].subtotal_cell
+        assert cell.state == CellState.AMOUNT
+        assert cell.amount == Decimal("-5000")
+        assert "SUBTOTAL_DERIVED" in cell.flags
+
+        zero_doc = _minimal_doc(
+            contractor_name="Zero Deriver",
+            divisions=[_div("DIV 03 00 00", "Concrete",
+                            line_items=[
+                                LineItem(description="Base work",
+                                         amount=Decimal("10000")),
+                                LineItem(description="Full credit",
+                                         amount=Decimal("-10000")),
+                            ],
+                            subtotal=None)],
+        )
+        bid = normalize_bid(zero_doc)
+        assert bid.divisions[0].subtotal_cell.state == CellState.NULL_BLANK
+
+
+class TestSubtotalStateContract:
+    """Contract test binding every consumer of the state→amount inclusion
+    table (Marvin GOLD-DEV-10 ruling (2); Floyd W2-3). Sites:
+      1. normalize._resolve_subtotal_cell        (shared constant)
+      2. normalize._apply_reclass_moves          (shared constant)
+      3. reconcile._AMOUNT_BEARING_STATES        (deliberately INDEPENDENT
+         copy — Floyd C-2 reviewer independence; value-equivalence asserted
+         here, the implementation is NOT collapsed onto the constant)
+    """
+
+    def test_shared_table_is_the_ruling_table(self):
+        assert set(SUBTOTAL_SUM_STATES) == {
+            CellState.AMOUNT,
+            CellState.EXPLICIT_ZERO,
+            CellState.ALLOWANCE,
+            CellState.NOT_COMPARABLE,
+        }
+
+    def test_resolve_subtotal_cell_follows_the_table(self):
+        """Derived (no stated subtotal) ITEMIZED division with one line per
+        state sums exactly the table states: 100 + 0 + 40 + 25 = 165."""
+        doc = _minimal_doc(divisions=[
+            _div("DIV 03 00 00", "Concrete", line_items=[
+                LineItem(description="Amount line", amount=Decimal("100")),
+                LineItem(description="Zero line", amount=Decimal("0"),
+                         is_explicit_zero=True),
+                LineItem(description="Allowance line", amount=Decimal("40"),
+                         is_allowance=True),
+                LineItem(description="NC line", amount=Decimal("25"),
+                         is_not_comparable=True),
+                LineItem(description="By-owner line", is_by_owner_others=True),
+                LineItem(description="Excluded line", is_excluded=True),
+            ]),
+        ])
+        bid = normalize_bid(doc)
+        div = next(d for d in bid.divisions if d.csi_code == "DIV 03 00 00")
+        assert div.subtotal_cell.amount == Decimal("165")
+
+    def test_reconcile_fourth_site_value_equivalence(self):
+        """Floyd W2-3: reconcile's independent table is VALUE-equivalent —
+        identical membership on every state a subtotal cell can carry.
+        NOT_COMPARABLE is line-level only: _resolve_subtotal_cell never emits
+        it on a subtotal cell (an NC-composed subtotal resolves AMOUNT; the
+        NC fencing lives in div_status/benchmarks, ENC-2)."""
+        from src.reconcile import _AMOUNT_BEARING_STATES, _expected_subtotal
+        assert set(_AMOUNT_BEARING_STATES) == (
+            set(SUBTOTAL_SUM_STATES) - {CellState.NOT_COMPARABLE}
+        )
+        # Behavioral proof of the NOT_COMPARABLE carve-out: an all-NC division
+        # with a stated subtotal resolves to state AMOUNT, and reconcile's
+        # independent scalar agrees with the written amount for it.
+        doc = _minimal_doc(divisions=[
+            _div("DIV 09 00 00", "Finishes",
+                 line_items=[LineItem(description="Owner option package",
+                                      amount=Decimal("145000"),
+                                      is_not_comparable=True)],
+                 subtotal=Decimal("145000")),
+        ])
+        bid = normalize_bid(doc)
+        cell = next(d for d in bid.divisions
+                    if d.csi_code == "DIV 09 00 00").subtotal_cell
+        assert cell.state == CellState.AMOUNT
+        assert _expected_subtotal(cell.state, cell.amount) == Decimal("145000")
+        # And the non-bearing states contribute 0 in reconcile's view.
+        assert _expected_subtotal(CellState.NULL_BLANK, None) == Decimal("0")
+        assert _expected_subtotal(CellState.EXCLUDED, None) == Decimal("0")
+        assert _expected_subtotal(
+            CellState.BY_OWNER_OTHERS, None) == Decimal("0")
 
 
 # ---------------------------------------------------------------------------

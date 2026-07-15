@@ -224,20 +224,25 @@ def _bid_gs6_firm():
 def _audit_rows_from_file(path: Path) -> list[tuple[str, str, str]]:
     """Read (status, code, contractor) tuples from the saved AUDIT sheet.
 
-    Per _write_audit_sheet (Option C): data starts at row 5; col A=Status,
+    Per _write_audit_sheet (W-D S2-3 layout): the key block sits at the TOP;
+    data rows follow the label-anchored column-header row. Col A=Status,
     B=View, C=Code, D=Contractor. Returns one tuple per audit row written.
     """
+    from src.write_matrix import find_audit_header_row
+
     wb = openpyxl.load_workbook(path)
     if "AUDIT" not in wb.sheetnames:
         return []
     ws = wb["AUDIT"]
+    header = find_audit_header_row(ws)
+    if header is None:
+        return []
     rows: list[tuple[str, str, str]] = []
-    for r in range(5, ws.max_row + 1):
+    for r in range(header + 1, ws.max_row + 1):
         status = ws.cell(row=r, column=1).value
         code = ws.cell(row=r, column=3).value
         contractor = ws.cell(row=r, column=4).value
-        # Stop at the summary block (its first column is a "Total items…" label
-        # with no Code/Contractor) — skip rows that aren't a real audit row.
+        # Skip anything that isn't a real audit row (blank tail, etc.).
         if not code or not contractor:
             continue
         rows.append((str(status), str(code), str(contractor)))

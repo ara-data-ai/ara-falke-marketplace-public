@@ -1,0 +1,22 @@
+# CONFIDENTIALITY GUARD — golden fixtures contain REAL Falke client data.
+#
+# Everything in this directory is ignored EXCEPT this file and compare.py
+# (both generic, client-token-free). The real bid PDFs, extracted BidDocument
+# JSONs, the approved matrix xlsx, and the README (which names the client
+# project/bidders) stay LOCAL-ONLY on this machine:
+#   - never committed to the FALKE workspace repo,
+#   - never picked up by a marketplace-bundle rebuild that honors .gitignore
+#     (belt-and-suspenders on top of the plugin-level *.xlsx ignore and the
+#     pre-push client-token grep in DEPLOY-falke-bid-tools-cowork.md §A2).
+# If these fixtures are lost, re-stage them from the provenance paths listed
+# in README.md.
+*
+!.gitignore
+!compare.py
+
+# PUBLIC-SAFE EXCEPTION — gold-project-v1/ is the SYNTHETIC golden set
+# (GOLDEN-SET v1, Marvin 2026-07-14): fictional project, bidders and figures,
+# zero client tokens. It is DESIGNED to ship in the public artifact and to
+# version with the engine (release gate). Everything else here stays ignored.
+!gold-project-v1/
+!gold-project-v1/**

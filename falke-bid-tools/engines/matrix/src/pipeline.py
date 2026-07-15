@@ -18,16 +18,38 @@ Usage (run as a module from the bundled engine root):
     --project-config REQUIRED. Per-run project identity (name/address/SF-basis).
     --sf-basis       OPTIONAL. Explicit $/SF denominator (overrides config/extract).
     --sf-confirmed   OPTIONAL. Accept the extracted/config GSF as the SF basis.
+    --expect-bids    OPTIONAL. The number of bids the caller expects to land in
+                     the matrix (the skill layer knows how many PDFs it
+                     extracted). Mismatch with the loaded valid-bid count is a
+                     hard-stop (exit 2) BEFORE anything is written — a second,
+                     independent count on top of the exit-4 disclosure below.
 
-Exit-code contract:
-    0 — clean: the matrix was written and tied out with zero failures.
-    2 — SF-basis gate: a confirmed $/SF denominator was not supplied (a missing
-        required input — a fiduciary decision, never silently guessed; scoping
-        §1.3/§1.4, M2). The file is NOT written.
+Exit-code contract (v2 — F1/X, Floyd ruling R-2):
+    0 — clean: the matrix was written, tied out with zero failures, and EVERY
+        submitted input bid is in it (no dropped inputs on exit 0 — standing
+        gate criterion). Deliberate skips (skip=true / template placeholders)
+        are not drops.
+    1 — environment / nothing to do: --interim-dir missing, or zero valid bids.
+    2 — input gate (hard stop, file NOT written):
+          * SF-basis gate: a confirmed $/SF denominator was not supplied (a
+            missing required input — a fiduciary decision, never silently
+            guessed; scoping §1.3/§1.4, M2), or project config invalid.
+          * --expect-bids N was supplied and N != the loaded valid-bid count.
+          * duplicate contractor name: two interim files claim the same
+            (case-folded) contractor_name — usually a stale JSON from a prior
+            run. Never silently guessed, never disambiguated into board-facing
+            headers (F2, Floyd ruling R-3).
     3 — delivered with verification failures: Stage 6b found ≥1 post-write
         tie-out failure. The file IS delivered but LOUD-QUARANTINED (RED banner +
         cell marks + AUDIT flag); each flagged figure must be verified against the
         source bid (STAGE6B-QUARANTINE-DISCLOSURE-SPEC.md).
+    4 — delivered, but one or more inputs were EXCLUDED: an input bid failed
+        JSON parse / schema validation / structured intake / normalization and
+        is NOT in the matrix. Each exclusion is a RED INPUT_EXCLUDED row on the
+        AUDIT sheet naming the file and the reason. The matrix is otherwise
+        verified. Precedence: if Stage 6b ALSO quarantined, exit is 3 (the
+        rendering defect is the louder class); the INPUT_EXCLUDED rows still
+        land on the AUDIT sheet either way, so no drop is ever silent.
 
 Pipeline stages:
     0.5. Deterministic structured intake: any *.xlsx / *.csv bid files in the
@@ -54,7 +76,7 @@ from pydantic import ValidationError
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from src.audit import audit_bids
+from src.audit import AuditCode, AuditItem, AuditStatus, audit_bids
 from src.config_errors import MatrixConfigError
 from src.intake_structured import run_structured_intake
 from src.models import BidDocument
@@ -111,6 +133,7 @@ def run_pipeline(
     project_config: Path,
     sf_basis: float | None = None,
     sf_confirmed: bool = False,
+    expect_bids: int | None = None,
 ) -> None:
     interim_dir = Path(interim_dir)
     out_path = Path(out_path)
@@ -159,6 +182,7 @@ def run_pipeline(
     skipped: list[tuple[str, str]] = []
     validation_errors: list[tuple[str, str]] = list(intake_errors)
     valid_docs: list[BidDocument] = []
+    valid_sources: list[str] = []   # source file per valid doc (same order)
 
     for file_path in json_files:
         print(f"Loading: {file_path.name}")
@@ -184,6 +208,7 @@ def run_pipeline(
             doc = BidDocument.model_validate(raw)
             print(f"  OK: {doc.contractor_name!r} — {len(doc.divisions)} divisions")
             valid_docs.append(doc)
+            valid_sources.append(file_path.name)
         except ValidationError as e:
             # Log validation error and skip this bid rather than crashing
             first_error = e.errors()[0] if e.errors() else {}
@@ -199,6 +224,60 @@ def run_pipeline(
     if not valid_docs:
         print("ERROR: No valid bids to process. Exiting.")
         sys.exit(1)
+
+    # --- Stage 3a: Input-identity gates (hard stops BEFORE anything is written) ---
+
+    # Gate 1 (F2, Floyd R-3): duplicate contractor name across loaded bids.
+    # Every downstream stage (writer columns, reconcile's name→column map,
+    # quarantine relocation) keys bidders by contractor_name, so a duplicate
+    # name collapses two bids onto one identity: reconcile verifies one bid
+    # against the other's column (FALSE quarantine on a correct workbook) or,
+    # if the duplicates are identical, silently skips verifying one column.
+    # Never silently guess; never disambiguate into board-facing headers.
+    by_name: dict[str, list[str]] = {}
+    for doc, src in zip(valid_docs, valid_sources):
+        key = " ".join(str(doc.contractor_name).split()).casefold()
+        by_name.setdefault(key, []).append(src)
+    dup_names = {k: v for k, v in by_name.items() if len(v) > 1}
+    if dup_names:
+        print("STOP (exit 2): duplicate contractor name(s) across the loaded bid files.")
+        for _key, files in sorted(dup_names.items()):
+            display = next(
+                doc.contractor_name for doc, src in zip(valid_docs, valid_sources)
+                if src == files[0]
+            )
+            # Operator message — Marvin's W-D ruling M-4, verbatim.
+            print(
+                f"\n  Two bid files carry the same contractor name "
+                f"'{display}'. Most often this is a stale extraction JSON "
+                f"from an earlier run still in the interim folder — delete "
+                f"the stale file and re-run. If {display} genuinely "
+                f"submitted two proposals (e.g. a base bid plus an alternate "
+                f"or breakout bid), rename the second file's "
+                f"`contractor_name` to \"{display} - Alternate\" so it "
+                f"levels as its own column. The matrix never merges two "
+                f"files or silently drops one."
+            )
+            print("  The files:")
+            for fname in files:
+                print(f"    - {fname}")
+        print("\n  No file was written.")
+        sys.exit(2)
+
+    # Gate 2 (F1/B-1, Floyd R-2): caller-asserted bid count. The skill layer
+    # knows how many PDFs it extracted; a mismatch here means an input never
+    # made it into the run — stop before writing rather than deliver short.
+    if expect_bids is not None and expect_bids != len(valid_docs):
+        print(f"STOP (exit 2): --expect-bids {expect_bids}, but "
+              f"{len(valid_docs)} valid bid(s) loaded "
+              f"({len(skipped)} skipped, {len(validation_errors)} failed).")
+        for fname, reason in skipped:
+            print(f"  SKIPPED  {fname}: {reason}")
+        for fname, reason in validation_errors:
+            print(f"  FAILED   {fname}: {reason}")
+        print("  Fix or remove the missing/failed input(s) — or correct "
+              "--expect-bids — and re-run. No file was written.")
+        sys.exit(2)
 
     # --- Stage 3b: Resolve project identity + the SF-basis gate (M1/M2) ---
     # The $/SF denominator is a fiduciary decision. Hard-stop (exit 2) unless the
@@ -273,6 +352,22 @@ def run_pipeline(
     # --- Stage 5b: Audit on the leveled buckets (cross-bid signals tagged leveled) ---
     print("Stage 5b: Running extraction & normalization audit ...")
     audit_items = audit_bids(leveled_bids)
+
+    # F1 (Floyd R-2): every dropped input becomes a RED INPUT_EXCLUDED row on
+    # the AUDIT sheet — the exclusion must be visible on the instrument itself,
+    # not only in console prose. Deliberate skips are not drops.
+    dropped_inputs = list(validation_errors)
+    for identifier, reason in dropped_inputs:
+        audit_items.append(AuditItem(
+            contractor_name=identifier,
+            status=AuditStatus.RED,
+            code=AuditCode.INPUT_EXCLUDED,
+            message=(f"Input bid EXCLUDED from this matrix — {reason}. "
+                     f"This bid is NOT in any column or total. Re-extract or "
+                     f"fix the input and re-run before using this matrix for "
+                     f"an award."),
+        ))
+
     normalized_bids = mirror_bids
     red_count    = sum(1 for a in audit_items if a.status.value == "RED")
     yellow_count = sum(1 for a in audit_items if a.status.value == "YELLOW")
@@ -332,6 +427,11 @@ def run_pipeline(
               f"(exit 3) — flagged on the Bid_Form banner + AUDIT tab. The file "
               f"WAS delivered; verify each flagged figure against the source bid "
               f"before relying on it for an award.")
+        if dropped_inputs:
+            print(f"NOTE: {len(dropped_inputs)} input bid(s) were ALSO EXCLUDED "
+                  f"from this matrix (RED INPUT_EXCLUDED rows on the AUDIT tab). "
+                  f"Exit 3 takes precedence over exit 4; both problems are on "
+                  f"the AUDIT sheet.")
         sys.exit(3)
     print(f"  Tie-out OK: grand totals, footer arithmetic, division subtotals, "
           f"and audit-row count all reconcile (within ${1}).")
@@ -378,6 +478,17 @@ def run_pipeline(
         for fname, reason in validation_errors:
             print(f"  {fname}: {reason}")
 
+    # F1 (Floyd R-2, standing gate criterion): NO dropped inputs on exit 0.
+    # The matrix was delivered and tied out, but it does not contain every
+    # submitted input — say so with a distinct exit code, loudly.
+    if dropped_inputs:
+        print(f"\nDELIVERED, BUT {len(dropped_inputs)} INPUT BID(S) EXCLUDED "
+              f"(exit 4) — each exclusion is a RED INPUT_EXCLUDED row on the "
+              f"AUDIT tab. The matrix is INCOMPLETE: do not use it for an "
+              f"award until the excluded bid(s) are fixed and the run repeats "
+              f"clean (exit 0).")
+        sys.exit(4)
+
     print("\nDone.")
 
 
@@ -419,6 +530,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Accept the extracted/config GSF as the SF basis (suggest-and-confirm).",
     )
+    parser.add_argument(
+        "--expect-bids",
+        type=int,
+        default=None,
+        dest="expect_bids",
+        help="Number of bids the caller expects in the matrix (the skill layer "
+             "knows its PDF count). Mismatch with the loaded valid-bid count "
+             "hard-stops (exit 2) before anything is written.",
+    )
     return parser.parse_args(argv)
 
 
@@ -430,4 +550,5 @@ if __name__ == "__main__":
         project_config=args.project_config,
         sf_basis=args.sf_basis,
         sf_confirmed=args.sf_confirmed,
+        expect_bids=args.expect_bids,
     )

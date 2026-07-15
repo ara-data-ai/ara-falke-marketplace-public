@@ -29,7 +29,7 @@ from pathlib import Path
 import openpyxl
 import pytest
 
-from src.audit import AuditCode, audit_bids
+from src.audit import AuditCode, AuditStatus, audit_bids
 from src.firm_config import Firm, KnownFirmsConfig, Reclassification
 from src.models import (
     BidDocument,
@@ -47,7 +47,11 @@ from src.models import (
 from src.normalize import build_normalized_view, compute_cross_bid_stats, normalize_bid
 from src.reconcile import reconcile_written_matrix
 from src.run_config import RunInputs
-from src.write_matrix import write_matrix
+from src.write_matrix import (
+    LEVELED_CSUB_OFFSET,
+    _lev_col_start,
+    write_matrix,
+)
 
 def _synthetic_firm_config() -> KnownFirmsConfig:
     """A synthetic, ACTIVE known-firm config (no real names) carrying the two
@@ -307,6 +311,187 @@ class TestNoPhantomGap:
 
 
 # ---------------------------------------------------------------------------
+# GOLD-DEV-7 rules (1)+(2) — audit-noise fix (harness D1 + $0-median guard)
+# ---------------------------------------------------------------------------
+
+class TestAuditNoiseFixRules12:
+    """Marvin's GOLD-DEV-7 ruling, rules (1) and (2) ONLY — rule (3) is
+    deferred to land with the GOLD-DEV-3/ENC-6 exclusion instrumentation."""
+
+    def _shell_doc(self) -> BidDocument:
+        """A bid carrying a zero-item, no-subtotal LUMP_SUM shell (the empty
+        split-secondary shape, harness D1) alongside one real division."""
+        return _doc("Shell Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description="Painting",
+                                 amount=Decimal("100000"))],
+                 subtotal=Decimal("100000")),
+            _div("DIV 23 00 00", "DIV 23 00 00", items=[], subtotal=None,
+                 cost=CostStructure.LUMP_SUM),
+        ], Decimal("100000"))
+
+    def _peer(self) -> BidDocument:
+        return _doc("Peer Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description="Wall finishes",
+                                 amount=Decimal("120000"))],
+                 subtotal=Decimal("120000")),
+        ], Decimal("120000"))
+
+    def _audit(self, docs):
+        mirrors = [normalize_bid(d) for d in docs]
+        leveled = compute_cross_bid_stats(
+            [build_normalized_view(m, d) for m, d in zip(mirrors, docs)]
+        )
+        return audit_bids(leveled)
+
+    def test_rule1_zero_item_no_subtotal_shell_emits_no_lump_sum_row(self):
+        items = self._audit([self._shell_doc(), self._peer()])
+        rows = [i for i in items
+                if i.code == AuditCode.LUMP_SUM_DIVISION
+                and i.contractor_name == "Shell Co"
+                and i.division_csi == "DIV 23 00 00"]
+        assert rows == [], "a no-dollar shell has no 'single total' to verify"
+
+    def test_rule2_blank_division_with_zero_median_emits_no_gap(self):
+        items = self._audit([self._shell_doc(), self._peer()])
+        rows = [i for i in items
+                if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                and i.contractor_name == "Shell Co"
+                and i.division_csi == "DIV 23 00 00"]
+        assert rows == [], 'no "Field median: $0" gap noise (rule 2 guard)'
+
+    def test_rule1_stated_zero_lump_sum_still_fires(self):
+        """A stated-$0 LUMP_SUM division is a SUBMITTED figure — the
+        LUMP_SUM_DIVISION row must survive the rule-1 guard (value None,
+        matching the writer's $0 rendering of the register value)."""
+        doc = _doc("Zero Co", [
+            _div("DIV 01 00 00", "General Requirements", items=[],
+                 subtotal=Decimal("0"), cost=CostStructure.LUMP_SUM),
+        ], Decimal("0"))
+        items = self._audit([doc, self._peer()])
+        rows = [i for i in items
+                if i.code == AuditCode.LUMP_SUM_DIVISION
+                and i.contractor_name == "Zero Co"
+                and i.division_csi == "DIV 01 00 00"]
+        assert len(rows) == 1
+
+    def test_rule2_blank_division_with_positive_median_still_flags(self):
+        """The guard must not over-suppress: present-but-blank where the
+        field median is real still raises the gap."""
+        blank = _doc("Blank Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description="Finishes", amount=None)],
+                 subtotal=None),
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GR", amount=Decimal("50000"))],
+                 subtotal=Decimal("50000")),
+        ], Decimal("50000"))
+        items = self._audit([blank, self._peer()])
+        rows = [i for i in items
+                if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                and i.contractor_name == "Blank Co"
+                and i.division_csi == "DIV 09 00 00"]
+        assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# GOLD-DEV-8 — writer-side vacated-by-reclass suppression (the armed landmine)
+# ---------------------------------------------------------------------------
+
+class TestVacatedDivisionWriterSuppression:
+    """GOLD-DEV-8 (fixed with GOLD-DEV-10, Marvin ruling (3)): when a PEER
+    prices a division that the known firm's reclass fully VACATED, the
+    vacated bidder's leveled cell must render blank with the reclass comment
+    — never the R5 'no pricing submitted' red (a false missing-scope story
+    about a bidder who DID price the scope)."""
+
+    def _peer_pricing_div13(self) -> BidDocument:
+        """A peer that legitimately prices DIV 13 — the FROM division of
+        ACME's flooring reclass (DIV 13 → DIV 09). This is the exact shape
+        that armed the landmine."""
+        return _doc("Coastal Restoration LLC", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description="Flooring + Painting",
+                                 amount=Decimal("560000"))],
+                 subtotal=Decimal("560000")),
+            _div("DIV 13 00 00", "Special Construction",
+                 items=[LineItem(description="Interior build-out package",
+                                 amount=Decimal("200000"))],
+                 subtotal=Decimal("200000")),
+        ], Decimal("760000"))
+
+    def test_vacated_cell_blank_with_reclass_comment_not_r5_red(self):
+        docs = [_firm_doc(), self._peer_pricing_div13()]
+        mirrors = [normalize_bid(d) for d in docs]
+        leveled = compute_cross_bid_stats(
+            [build_normalized_view(m, d) for m, d in zip(mirrors, docs)]
+        )
+        items = audit_bids(leveled)
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "m.xlsx"
+            write_matrix(mirrors, out, _run_inputs(), audit_items=items,
+                         leveled_bids=leveled)
+            wb = openpyxl.load_workbook(out)
+            ws = wb["Leveled_Normalized"]
+            # Locate geometry by label (same idiom as reconcile.py).
+            name_row = next(
+                (r + 1 for r in range(1, ws.max_row + 1)
+                 if ws.cell(row=r, column=1).value == "CSI"), 5,
+            )
+            cols = {}
+            for i in range(len(mirrors)):
+                nm = ws.cell(row=name_row, column=_lev_col_start(i)).value
+                if isinstance(nm, str):
+                    cols[nm] = _lev_col_start(i)
+            sub_row = next(
+                r for r in range(1, ws.max_row + 1)
+                if ws.cell(row=r, column=2).value
+                == "SPECIAL CONSTRUCTION SUBTOTAL"
+            )
+            acme = ws.cell(row=sub_row,
+                           column=cols["Acme Restoration LLC"]
+                           + LEVELED_CSUB_OFFSET)
+            peer = ws.cell(row=sub_row,
+                           column=cols["Coastal Restoration LLC"]
+                           + LEVELED_CSUB_OFFSET)
+            # Peer's price is on the sheet (the suppression genuinely
+            # mattered: any_priced is True for DIV 13).
+            assert float(peer.value) == 200000.0
+            # Vacated cell: NO value, NO red fill, the reclass story on-cell.
+            assert acme.value in (None, "")
+            fill = getattr(acme.fill.fgColor, "rgb", None)
+            assert not (isinstance(fill, str) and fill.endswith("FF0000")), (
+                "R5 red painted on a reclass-vacated division (GOLD-DEV-8)"
+            )
+            assert acme.comment is not None
+            assert "Reclassified" in acme.comment.text
+            assert "DIV 09" in acme.comment.text
+            assert "KNOWN_FIRM_RECLASSIFIED" in acme.comment.text
+
+    def test_vacated_suppression_matches_audit_suppression(self):
+        """The writer consumes the SAME vacated set audit.py suppresses on
+        (Floyd W2-4) — no SCOPE_GAP_IMPLICIT and no R5 red for the vacated
+        division, in the same run."""
+        docs = [_firm_doc(), self._peer_pricing_div13()]
+        mirrors = [normalize_bid(d) for d in docs]
+        leveled = compute_cross_bid_stats(
+            [build_normalized_view(m, d) for m, d in zip(mirrors, docs)]
+        )
+        items = audit_bids(leveled)
+        gaps = [
+            i for i in items
+            if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+            and i.contractor_name == "Acme Restoration LLC"
+            and i.division_csi == "DIV 13 00 00"
+        ]
+        assert gaps == []
+        acme_lev = next(b for b in leveled
+                        if b.contractor_name == "Acme Restoration LLC")
+        assert acme_lev.vacated_by_reclass.get("DIV 13 00 00") == "DIV 09 00 00"
+
+
+# ---------------------------------------------------------------------------
 # §8.5 — Cross-bid stats only on leveled
 # ---------------------------------------------------------------------------
 
@@ -549,3 +734,292 @@ class TestMirrorAuditHonesty:
             assert row.value == leveled_val, (
                 f"{csi} carries the leveled subtotal {leveled_val}, got {row.value}"
             )
+
+
+# ---------------------------------------------------------------------------
+# M-1 (W-D) — ONE scope-gap threshold ($20,000) on BOTH audit branches
+# ---------------------------------------------------------------------------
+
+class TestScopeGapMaterialityThreshold:
+    """M-1: SCOPE_GAP_IMPLICIT (AUDIT register) is thresholded at field
+    median > canon.SCOPE_GAP_MEDIAN_THRESHOLD ($20,000) on BOTH branches
+    (absent division AND present-but-blank). The R5 red on the leveled sheet
+    stays threshold-free (Falke program rule) — disclosed as A#14."""
+
+    def _audit(self, docs):
+        mirrors = [normalize_bid(d) for d in docs]
+        leveled = compute_cross_bid_stats(
+            [build_normalized_view(m, d) for m, d in zip(mirrors, docs)]
+        )
+        return audit_bids(leveled), mirrors, leveled
+
+    @staticmethod
+    def _pricer(name, small, big=Decimal("500000")):
+        # DIV 10 carries a SMALL field price; DIV 03 a big one.
+        return _doc(name, [
+            _div("DIV 10 00 00", "Specialties",
+                 items=[LineItem(description=f"{name} signage", amount=small)],
+                 subtotal=small),
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description=f"{name} concrete", amount=big)],
+                 subtotal=big),
+        ], small + big)
+
+    def test_sub_20k_median_gap_suppressed_both_branches(self):
+        absent = _doc("Absent Co", [
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description="Concrete", amount=Decimal("500000"))],
+                 subtotal=Decimal("500000")),
+        ], Decimal("500000"))
+        blank = _doc("Blank Co", [
+            _div("DIV 10 00 00", "Specialties",
+                 items=[LineItem(description="Signage", amount=None)],
+                 subtotal=None),
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description="Concrete", amount=Decimal("500000"))],
+                 subtotal=Decimal("500000")),
+        ], Decimal("500000"))
+        # DIV 10 field median = 15,000 (< 20k): register noise, no gap rows.
+        items, _m, _l = self._audit([
+            self._pricer("Pricer One", Decimal("15000")),
+            self._pricer("Pricer Two", Decimal("15000")),
+            absent, blank,
+        ])
+        gaps = [i for i in items if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                and i.division_csi == "DIV 10 00 00"]
+        assert gaps == [], [f"{g.contractor_name}: {g.value}" for g in gaps]
+
+    def test_above_20k_median_still_flags_both_branches(self):
+        absent = _doc("Absent Co", [
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description="Concrete", amount=Decimal("500000"))],
+                 subtotal=Decimal("500000")),
+        ], Decimal("500000"))
+        blank = _doc("Blank Co", [
+            _div("DIV 10 00 00", "Specialties",
+                 items=[LineItem(description="Signage", amount=None)],
+                 subtotal=None),
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description="Concrete", amount=Decimal("500000"))],
+                 subtotal=Decimal("500000")),
+        ], Decimal("500000"))
+        items, _m, _l = self._audit([
+            self._pricer("Pricer One", Decimal("25000")),
+            self._pricer("Pricer Two", Decimal("25000")),
+            absent, blank,
+        ])
+        gaps = {i.contractor_name for i in items
+                if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                and i.division_csi == "DIV 10 00 00"}
+        assert gaps == {"Absent Co", "Blank Co"}
+
+    def test_r5_red_on_leveled_sheet_stays_threshold_free(self):
+        """A peer-priced $15k division a bidder left missing still paints R5
+        red on the leveled sheet — the client program rule has no threshold."""
+        absent = _doc("Absent Co", [
+            _div("DIV 03 00 00", "Concrete",
+                 items=[LineItem(description="Concrete", amount=Decimal("500000"))],
+                 subtotal=Decimal("500000")),
+        ], Decimal("500000"))
+        docs = [self._pricer("Pricer One", Decimal("15000")),
+                self._pricer("Pricer Two", Decimal("15000")), absent]
+        _items, mirrors, leveled = self._audit(docs)
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "m.xlsx"
+            write_matrix(mirrors, out, _run_inputs(), leveled_bids=leveled)
+            ws = openpyxl.load_workbook(out)["Leveled_Normalized"]
+            sub_row = next(
+                r for r in range(1, ws.max_row + 1)
+                if ws.cell(row=r, column=2).value == "SPECIALTIES SUBTOTAL")
+            col = next(
+                _lev_col_start(i) for i in range(3)
+                if ws.cell(row=5, column=_lev_col_start(i)).value == "Absent Co")
+            cell = ws.cell(row=sub_row, column=col + LEVELED_CSUB_OFFSET)
+            rgb = cell.fill.fgColor.rgb
+            assert isinstance(rgb, str) and rgb[-6:].upper() == "FF0000", (
+                "R5 red must stay threshold-free on the leveled sheet")
+
+
+# ---------------------------------------------------------------------------
+# ENC-6 (W-D) — exclusion instrumentation + GOLD-DEV-7 rule (3), one change
+# ---------------------------------------------------------------------------
+
+class TestEnc6ExclusionInstrumentation:
+    """ENC-6: exclusions/by-owner classifications get first-class register
+    rows keyed on div_status; rule (3) then suppresses the scope-gap row for
+    all-classified blank divisions (Marvin's ordering constraint — bundled)."""
+
+    def _audit(self, docs):
+        mirrors = [normalize_bid(d) for d in docs]
+        leveled = compute_cross_bid_stats(
+            [build_normalized_view(m, d) for m, d in zip(mirrors, docs)]
+        )
+        return audit_bids(leveled)
+
+    @staticmethod
+    def _pricer(name, amount=Decimal("200000")):
+        return _doc(name, [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[LineItem(description=f"{name} finishes package",
+                                 amount=amount)],
+                 subtotal=amount),
+        ], amount)
+
+    def test_fully_excluded_division_one_red_row_with_median_impact(self):
+        excluder = _doc("Excluder Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[
+                     LineItem(description="Corridor painting", is_excluded=True),
+                     LineItem(description="Lobby flooring", is_excluded=True),
+                 ],
+                 subtotal=Decimal("0")),
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GCs", amount=Decimal("50000"))],
+                 subtotal=Decimal("50000")),
+        ], Decimal("50000"))
+        items = self._audit([
+            excluder,
+            self._pricer("Pricer One", Decimal("190000")),
+            self._pricer("Pricer Two", Decimal("210000")),
+        ])
+        rows = [i for i in items if i.code == AuditCode.EXPLICIT_EXCLUSION]
+        # Dedup: ONE division-level row, NO per-line rows.
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.contractor_name == "Excluder Co"
+        assert row.division_csi == "DIV 09 00 00"
+        assert row.line_item_desc is None
+        assert row.status == AuditStatus.RED
+        assert row.view == "both"
+        assert row.value == "Excluded"
+        assert "shown red 'Excluded' on the leveled sheet (R28" in row.message
+        assert "field median $200,000" in row.message
+        assert "plug/add-back" in row.message
+        # Rule 3 side effect: no scope-gap row for the excluded division.
+        assert not [i for i in items
+                    if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                    and i.contractor_name == "Excluder Co"
+                    and i.division_csi == "DIV 09 00 00"]
+
+    def test_fully_excluded_division_without_benchmark(self):
+        excluder = _doc("Excluder Co", [
+            _div("DIV 10 00 00", "Specialties",
+                 items=[LineItem(description="Signage", is_excluded=True)],
+                 subtotal=Decimal("0")),
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GCs", amount=Decimal("50000"))],
+                 subtotal=Decimal("50000")),
+        ], Decimal("50000"))
+        peer = _doc("Peer Co", [
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GCs", amount=Decimal("60000"))],
+                 subtotal=Decimal("60000")),
+        ], Decimal("60000"))
+        items = self._audit([excluder, peer])
+        row = next(i for i in items if i.code == AuditCode.EXPLICIT_EXCLUSION)
+        assert ("no field benchmark available — price the exclusion before "
+                "comparison.") in row.message
+
+    def test_partial_exclusion_one_red_row_per_line(self):
+        partial = _doc("Partial Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[
+                     LineItem(description="Wall finishes",
+                              amount=Decimal("180000")),
+                     LineItem(description="Corridor painting", is_excluded=True),
+                     LineItem(description="Lobby flooring", is_excluded=True),
+                 ],
+                 subtotal=Decimal("180000")),
+        ], Decimal("180000"))
+        items = self._audit([partial, self._pricer("Pricer One")])
+        rows = [i for i in items if i.code == AuditCode.EXPLICIT_EXCLUSION
+                and i.contractor_name == "Partial Co"]
+        assert {r.line_item_desc for r in rows} == {
+            "Corridor painting", "Lobby flooring"}
+        for r in rows:
+            assert r.status == AuditStatus.RED
+            assert r.value == "Excluded"
+            assert ("Line item explicitly excluded within an otherwise-priced "
+                    "division") in r.message
+
+    def test_fully_by_owner_division_level_row_replaces_lines(self):
+        byo = _doc("ByOwner Co", [
+            _div("DIV 02 00 00", "Existing Conditions",
+                 items=[
+                     LineItem(description="Site demolition",
+                              is_by_owner_others=True,
+                              by_others_verbatim="Not Applicable"),
+                     LineItem(description="Clearing",
+                              is_by_owner_others=True,
+                              by_others_verbatim="Not Applicable"),
+                 ],
+                 subtotal=None),
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GCs", amount=Decimal("50000"))],
+                 subtotal=Decimal("50000")),
+        ], Decimal("50000"))
+        pricer = _doc("Pricer One", [
+            _div("DIV 02 00 00", "Existing Conditions",
+                 items=[LineItem(description="Demo package",
+                                 amount=Decimal("150000"))],
+                 subtotal=Decimal("150000")),
+        ], Decimal("150000"))
+        items = self._audit([byo, pricer])
+        rows = [i for i in items if i.code == AuditCode.BY_OWNER_DEDUCTED
+                and i.contractor_name == "ByOwner Co"]
+        # ONE division-level row (verbatim token), per-line rows REPLACED.
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.division_csi == "DIV 02 00 00"
+        assert row.line_item_desc is None
+        assert row.value == "Not Applicable"
+        assert "Division classified 'Not Applicable' by the bidder" in row.message
+        assert "(approved classification, R3/R8)" in row.message
+        # Rule 3: NO scope-gap row despite the peer's 150,000 median.
+        assert not [i for i in items
+                    if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                    and i.contractor_name == "ByOwner Co"
+                    and i.division_csi == "DIV 02 00 00"]
+
+    def test_by_owner_line_inside_priced_division_keeps_line_row(self):
+        mixed = _doc("Mixed Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[
+                     LineItem(description="Wall finishes",
+                              amount=Decimal("180000")),
+                     LineItem(description="Owner-carried appliances",
+                              is_by_owner_others=True,
+                              by_others_verbatim="By Owner"),
+                 ],
+                 subtotal=Decimal("180000")),
+        ], Decimal("180000"))
+        items = self._audit([mixed, self._pricer("Pricer One")])
+        rows = [i for i in items if i.code == AuditCode.BY_OWNER_DEDUCTED
+                and i.contractor_name == "Mixed Co"]
+        assert len(rows) == 1
+        assert rows[0].line_item_desc == "Owner-carried appliances"
+
+    def test_rule3_unclassified_blank_still_flags(self):
+        """Rule 3 must not over-suppress: a blank line among classified ones
+        keeps the scope-gap row (conservative)."""
+        blank = _doc("Blank Co", [
+            _div("DIV 09 00 00", "Finishes",
+                 items=[
+                     LineItem(description="Corridor painting", is_excluded=True),
+                     LineItem(description="Everything else", amount=None),
+                 ],
+                 subtotal=None),
+            _div("DIV 01 00 00", "General Requirements",
+                 items=[LineItem(description="GCs", amount=Decimal("50000"))],
+                 subtotal=Decimal("50000")),
+        ], Decimal("50000"))
+        items = self._audit([
+            blank,
+            self._pricer("Pricer One", Decimal("190000")),
+            self._pricer("Pricer Two", Decimal("210000")),
+        ])
+        assert [i for i in items
+                if i.code == AuditCode.SCOPE_GAP_IMPLICIT
+                and i.contractor_name == "Blank Co"
+                and i.division_csi == "DIV 09 00 00"], (
+            "a blank (unclassified) line keeps the gap row")

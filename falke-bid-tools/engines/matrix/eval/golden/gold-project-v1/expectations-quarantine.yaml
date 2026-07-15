@@ -1,0 +1,117 @@
+# =============================================================================
+# GOLDEN-SET v1 — BIDDER-FOOTER-ERROR VARIANT expectations (clean exit-0 run)
+# =============================================================================
+# Author: Marvin, 2026-07-14. Rewritten 2026-07-15 in the GOLD-DEV-6 / D2
+# fixing PR (Marvin ruling (4), Floyd W2-5). Inputs: interim-quarantine/*.json
+# + project.yaml.
+#
+# SCENARIO: "bond on top" — Quayside states bond $9,600 as a SEPARATE add-on
+# NOT carried in its stated grand total ($480,000). The engine's grand-total
+# composition treats BOND as additive, so:
+#   components sum = 480,000 + 9,600 = 489,600  vs  stated GT 480,000
+#   -> pre-write:  FOOTER_DISCREPANCY RED ($9,600) + R21 red on the GT cell
+#      (delta 9,600 > max($5, 0.5% x 489,600 = 2,448))
+#   -> Stage 6b check 2: arith_delta (9,600) == the bidder's OWN footer delta
+#      computed from the rendered composition (grand_total_component_sum vs
+#      stated GT) -> the written sheet FAITHFULLY reproduces the bidder's own
+#      inconsistency -> BIDDER-ERROR BRANCH: no POST_WRITE_TIEOUT_FAILURE,
+#      NO quarantine, EXIT 0. The R21 red + FOOTER_DISCREPANCY row tell the
+#      story in the right vocabulary: a bidder error, not a tool defect.
+# This variant now proves the bidder-error branch end to end; the quarantine
+# disclosure chain (banner / composed cell mark / AUDIT rows / QUARANTINE
+# line) is proven by the harness FAULT-INJECTION step on a corrupted copy of
+# the main-run workbook — the only honest way to produce a true tool defect.
+# The exit-3 pipeline gate itself is regression-covered by
+# tests/test_reconcile.py::test_pipeline_quarantines_and_delivers_on_tieout_failure.
+# =============================================================================
+
+run:
+  interim_dir: interim-quarantine/
+  project_config: project.yaml
+  sf_basis: 100000
+  expected_exit_code: 0          # bidder error is NOT a tool defect (GOLD-DEV-6 fixed)
+  file_delivered: true
+  expected_sheets: [Bid_Form, Leveled_Normalized, AUDIT]
+
+bidder_order:                    # leveled_total ascending
+  - Quayside Restoration Co.     # 480,000
+  - Quarry Bay Builders LLC      # 500,000
+
+leveled_sheet:
+  benchmarks:
+    "DIV 03 00 00":
+      # valid: 480,000 / 500,000 -> median 490,000; spread 20,000/490,000
+      median: 490000.00
+      n_valid: 2
+      spread: 0.040816
+      confidence: Low            # n < 3
+  divisions:
+    "DIV 03 00 00":
+      "Quayside Restoration Co.": {kind: priced, value: 480000.00, var: -0.020408, paint: none}
+      "Quarry Bay Builders LLC":  {kind: priced, value: 500000.00, var: 0.020408, paint: none}
+  footer:
+    # [CCS, GL, BR, GC_FEE, OHP, OTHER_FEES, BOND, FEES_SUBTOTAL, GRAND_TOTAL]
+    "Quayside Restoration Co.": [480000.00, 0, 0, 0, 0, 0, 9600.00, 9600.00, 480000.00]
+    "Quarry Bay Builders LLC":  [500000.00, 0, 0, 0, 0, 0, 0, 0.00, 500000.00]
+  grand_total_paint:
+    "Quayside Restoration Co.":
+      # GOLD-DEV-6 / D2 FIXED: no quarantine mark fires here anymore, so the
+      # write-time R21 red SURVIVES on the delivered cell — fill FF0000 and
+      # the R21 comment intact. (Was: FFCCCC quarantine fill overwriting
+      # both — the defect-tagged D2 encoding.) The R32 summary "Red Flags: 1"
+      # below now agrees with the visible cell — the count-vs-visible
+      # incoherence is gone with the same fix.
+      paint: {color: red, rule: R21}
+      comment_contains: "R21"
+    "Quarry Bay Builders LLC": {paint: none}
+  summary_block:
+    "Quayside Restoration Co.": {total_bid: 480000.00, adjusted_total: 480000.00, red: 1, cyan: 0, yellow: 0, avg_variance: -0.020408}
+    "Quarry Bay Builders LLC":  {total_bid: 500000.00, adjusted_total: 500000.00, red: 0, cyan: 0, yellow: 0, avg_variance: 0.020408}
+
+clean_run:
+  # ABSENCE assertions — the whole quarantine chain must NOT fire on a
+  # faithful reproduction of a bidder's own footer inconsistency.
+  no_quarantine_banner_contains: "AUTOMATED CHECK FAILED"   # neither data sheet, any row-1
+  no_tieout_rows: true            # zero POST_WRITE_TIEOUT_FAILURE rows on AUDIT
+  no_quarantine_summary_line_contains: "QUARANTINE:"
+
+audit_sheet:
+  # Full register (no appended tie-out rows; Stage 6b parity counts THESE).
+  totals: {RED: 1, YELLOW: 6, GREEN: 1, rows: 8}
+  rows:
+    "Quarry Bay Builders LLC":
+      - [DIV 03 00 00, LUMP_SUM_DIVISION,   YELLOW, both, "$500,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both, "$500,000"]
+      - [null,         GC_FEE_MISSING,      YELLOW, both, null]
+      - [null,         INSURANCE_NOT_STATED, YELLOW, both, null]
+    "Quayside Restoration Co.":
+      - [DIV 03 00 00, LUMP_SUM_DIVISION,   YELLOW, both, "$480,000"]
+      - [null,         FOOTER_DISCREPANCY,  RED,    both, "$9,600"]
+      - [null,         GC_FEE_MISSING,      YELLOW, both, null]
+      - [null,         INSURANCE_NOT_STATED, YELLOW, both, null]
+
+fault_injection:
+  # Harness step (Marvin GOLD-DEV-6 ruling (4); Floyd W2-5): the quarantine
+  # disclosure chain keeps regression coverage by CORRUPTING one GRAND TOTAL
+  # cell in a COPY of the main-run workbook, then calling
+  # reconcile_written_matrix + apply_quarantine directly and asserting:
+  #   1. >=1 POST_WRITE_TIEOUT_FAILURE (check 1 GT tie-out fires; check 2
+  #      still fires too — the corruption moves arith_delta away from the
+  #      bidder's own footer delta, proving the bidder-error branch does not
+  #      blind the checker to real write corruption on a GT cell),
+  #   2. the RED banner line 1 on BOTH data sheets,
+  #   3. the COMPOSED cell mark on the corrupted GT cell (quarantine fill
+  #      FFCCCC wins visually; comment contains the quarantine text),
+  #   4. compose-not-overwrite proven where a PRIOR comment exists: the
+  #      corrupted cell's quarantine comment PRESERVES any pre-existing
+  #      comment below the "--- prior flag on this cell ---" separator
+  #      (asserted in the pytest fault-injection test via a division-subtotal
+  #      corruption on a commented cell),
+  #   5. the appended RED POST_WRITE_TIEOUT_FAILURE AUDIT row(s) and the
+  #      QUARANTINE summary line above the tally.
+  corrupt: {sheet: Bid_Form, cell: GRAND_TOTAL, bidder_index: 0, value: 1.0}
+  banner_line1_exact: "⚠ AUTOMATED CHECK FAILED — DO NOT RELY ON THE FLAGGED FIGURES FOR AN AWARD DECISION."
+  banner_line3_contains: "POST_WRITE_TIEOUT_FAILURE"
+  mark_comment_contains: "does not reconcile to source — verify"
+  quarantine_fill_hexes: [FFCCCC, FF0000]
+  audit_summary_line_contains: "QUARANTINE:"

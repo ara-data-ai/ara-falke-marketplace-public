@@ -1,0 +1,920 @@
+# =============================================================================
+# GOLDEN-SET v1 — hand-leveled cell-level expectations (MAIN SET, clean run)
+# =============================================================================
+# Author: Marvin (bid-leveling domain authority). Date: 2026-07-14.
+# Ground truth for: engines/matrix engine v0.3.2 semantics.
+# Companion inputs: interim/*.json + project.yaml + overlay/known_firms.local.yaml
+#
+# EVERY value in this file was HAND-COMPUTED from the six interim BidDocuments
+# under the rules in FALKE/03_Matrix/FALKE-LEVELING-RULES-SPEC.md as implemented
+# in v0.3.2. Arithmetic is shown in comments so a reviewer (Christine, Floyd)
+# can re-derive any number without running the engine.
+#
+# VERSIONING RULE: this file versions WITH the engine. Any engine change that
+# legitimately alters a value here must update this file IN THE SAME CHANGE,
+# with the delta explained. Entries tagged `defect:` encode CURRENT engine
+# behavior that is a registered defect (see known_deviations at bottom) — when
+# the defect is fixed, flip the entry in the fixing PR.
+#
+# TOLERANCES for the harness:
+#   dollars:   |written - expected| <= 0.01
+#   fractions: |written - expected| <= 0.0001  (variance/spread are raw
+#              fractions; Excel number format renders them as %)
+#   strings:   comment assertions are substring matches (comment_contains);
+#              token assertions are EXACT cell-text matches.
+# =============================================================================
+
+meta:
+  gold_set: gold-project-v1
+  version: 1
+  engine_semantics: v0.3.2
+  author: Marvin
+  date: "2026-07-14"
+  public_safe: true          # zero real client tokens — synthetic by design
+
+run:
+  # Harness contract (see README.md §Harness):
+  # 1. Install overlay/known_firms.local.yaml as engines/matrix/config/
+  #    known_firms.local.yaml (backup/restore any pre-existing overlay; the
+  #    gold run must execute with EXACTLY this overlay).
+  # 2. PYTHONPATH=<engine root> python3 -m src.pipeline \
+  #      --interim-dir eval/golden/gold-project-v1/interim \
+  #      --project-config eval/golden/gold-project-v1/project.yaml \
+  #      --sf-basis 100000 --out <tmp>/gold-v1.xlsx
+  # 3. Assert exit code, then every block below. Report ALL mismatches (do not
+  #    fail fast); exit nonzero on any mismatch.
+  sf_basis: 100000
+  expected_exit_code: 0      # clean run: Stage 6b must tie out, no quarantine
+  expected_sheets: [Bid_Form, Leveled_Normalized, AUDIT]
+
+locator_contract:
+  # How the harness finds cells (same label-anchored idiom as reconcile.py —
+  # never absolute coordinates):
+  # - Bidder columns: contractor names on row 5. Leveled_Normalized groups
+  #   start at column D, stride 5 (COST | COST SUBTOTALS | $/SF | $/SXFX | VAR%).
+  #   Bid_Form groups start at column D, stride 3.
+  # - Division subtotal rows: col-B label "{DIVISION NAME UPPER} SUBTOTAL".
+  # - Leveled footer rows: col-B display labels (LEVELED_FOOTER_LABELS);
+  #   Bid_Form footer rows: col-A machine keys (e.g. GRAND_TOTAL).
+  # - Benchmark block: 4 columns right of the last bidder group, in order
+  #   BENCHMARK (median) | % SPREAD | VALID BIDS | CONFIDENCE, on subtotal rows.
+  # - Line rows: col-B description within the division block.
+  # - Paint hues (falke_rules): red FF0000, cyan 00FFFF, yellow FFFF00 (solid).
+  #   "paint: none" asserts NO Falke fill on the value cell (aqua subtotal band
+  #   is house formatting, not paint).
+  # - Division-level paint/tokens/comments sit on the COST SUBTOTALS cell;
+  #   line-level paint on the COST cell; footer paint on the merged COST cell.
+
+# Column order = leveled_total ascending (leveled_total == grand_total for all
+# six bids: Fairway's by-owner line carries no amount, so no deduction).
+bidder_order:
+  - Cypress Coast Plumbing Co.        # 300,000
+  - Fairway Building Group Inc.       # 833,000
+  - Beacon Shoreline Builders Inc.    # 1,117,000
+  - Eastline Mechanical & Restoration Corp   # 1,447,250
+  - Delta Gulf Contracting LLC        # 1,560,000
+  - Alpha Restoration Group LLC       # 1,582,000
+
+# W-D B4/§2: ONE identical LEGEND block on BOTH data sheets, with the
+# precedence line. Comment speaker-tags ([FALKE R{n}] / [ARA {tag}] /
+# [QUARANTINE]) are asserted per-cell below — Marvin hand-ratifies the tag
+# strings on this first W-D harness run.
+legend_present_on: [Bid_Form, Leveled_Normalized]
+legend_precedence_contains: "Quarantine ⚠ overrides all; then Red > Cyan > Yellow > Neutral."
+
+leveled_sheet:
+  presence:
+    banner_row1_contains: "ESTIMATOR-NORMALIZED"
+    disclaimer_row3_contains: "DISCLAIMER:"
+    # W-D B4/§2: the Falke-only legend is superseded by the ONE workbook
+    # legend (identical block on both data sheets — see legend_present_on).
+    legend_header_contains: "LEGEND — READING THIS WORKBOOK"
+    assumptions_header_contains: "LEVELING RULE DECISIONS & ASSUMPTIONS IN FORCE"
+    alternates_header_contains: "Bid Alternates (add/deduct — NOT included in base comparison)"
+    summary_header_contains: "LEVELING SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # BENCHMARK BLOCK per division (subtotal rows). R9 median over VALID prices
+  # only (state AMOUNT/ALLOWANCE — A6): stated-$0 (Cypress DIV 01), Excluded
+  # (Beacon DIV 09), Not Applicable (Fairway DIV 02), Not-Comparable (Fairway
+  # DIV 09) and missing cells NEVER enter the median.
+  # ---------------------------------------------------------------------------
+  benchmarks:
+    "DIV 01 00 00":
+      # valid: Echo 80,000 / Alpha 100,000 / Beacon 102,000(leveled, 90,000+
+      # 12,000 dumpster reclass) / Fairway 110,000 / Delta 120,000
+      # sorted -> median = 102,000; spread = (120,000-80,000)/102,000 = 0.392157
+      median: 102000.00
+      n_valid: 5
+      spread: 0.392157
+      confidence: Medium          # n>=4 but spread > 0.30 (R29 ladder, Q2)
+    "DIV 02 00 00":
+      # valid: Alpha 100,000 / Delta 160,000 -> median (2 bids) = 130,000
+      # spread = 60,000/130,000 = 0.461538. n=2 -> confidence Low, and paint
+      # is GATE-SUPPRESSED (Q5/RISK-2: <3 valid bids -> benchmark shows, no
+      # cyan/yellow even though both cells qualify: 100,000 <= 104,000 and
+      # 160,000 >= 156,000).
+      median: 130000.00
+      n_valid: 2
+      spread: 0.461538
+      confidence: Low
+    "DIV 03 00 00":
+      # GOLD-DEV-1 CLOSED (W-D M-2): Delta's R20-failed 508,000 leaves the
+      # median (R7 — invalid/red-flagged values excluded until corrected).
+      # valid members: Fairway 310,000 / Echo 450,000 / Alpha 500,000 /
+      # Beacon 520,000 -> median 475,000; spread = (520,000-310,000)/475,000
+      # = 0.442105; n=4 but spread > 0.30 -> Medium (R29 ladder).
+      median: 475000.00
+      n_valid: 4
+      spread: 0.442105
+      confidence: Medium
+    "DIV 07 00 00":
+      # valid: Fairway 360,000 / Echo 380,000 / Beacon 400,000 (ITEMIZED
+      # 300,000 + 60,000 + 40,000 priced allowance — Q4: allowance counts in
+      # subtotal AND median; the GOLD-DEV-10 shape-(b) re-arm sits on the
+      # RECLASS bidder) / Alpha 400,000 (LUMP_SUM) / Delta 400,000
+      # median 400,000; spread = 40,000/400,000 = 0.10 -> HIGH (n>=4, <=0.30)
+      median: 400000.00
+      n_valid: 5
+      spread: 0.10
+      confidence: High
+    "DIV 09 00 00":
+      # valid: Echo 190,000 / Alpha 200,000 / Delta 250,000 -> median 200,000.
+      # Beacon (Excluded) and Fairway (Not-Comparable 145,000) are FENCED OUT
+      # (R28 / ENC-2) — that n=3 (not 5) is the fencing proof.
+      # spread = 60,000/200,000 = 0.30 -> Medium (n=3 < 4, spread <= 0.50)
+      median: 200000.00
+      n_valid: 3
+      spread: 0.30
+      confidence: Medium
+    "DIV 22 00 00":
+      # valid: Alpha 150,000 / Echo 265,000 (legacy code-15 split derived:
+      # 150,000+90,000+25,000) / Cypress 300,000 -> median 265,000
+      # spread = 150,000/265,000 = 0.566038 > 0.50 -> LOW via spread branch
+      median: 265000.00
+      n_valid: 3
+      spread: 0.566038
+      confidence: Low
+    "DIV 11 00 00":
+      benchmark_cells: empty      # Beacon's dollars moved out by reclass; no
+                                  # valid price anywhere -> blank band, no red
+                                  # for anyone (nobody priced it)
+    "DIV 23 00 00":
+      benchmark_cells: empty      # Echo's empty split secondary; nobody priced
+
+  # ---------------------------------------------------------------------------
+  # DIVISION SUBTOTAL CELLS per (division, bidder): kind / value / VAR% / paint.
+  # paint: {color, rule} — rule ids per FALKE-LEVELING-RULES-SPEC.md.
+  # var is the raw fraction written to the VAR% cell (blank where absent).
+  # ---------------------------------------------------------------------------
+  divisions:
+    "DIV 01 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: zero                 # stated $0.00 lump sum, no classification
+        value: 0.00                # rendered 0.00, painted red
+        paint: {color: red, rule: R6}
+        comment_contains_all: ["[FALKE R6]", "Zero value without approved classification — R6"]
+      "Fairway Building Group Inc.":  {kind: priced, value: 110000.00, var: 0.078431, paint: none}
+      "Beacon Shoreline Builders Inc.":
+        kind: priced
+        value: 102000.00           # 60,000 + 30,000 + 12,000 reclassed-in dumpster
+        var: 0.0                   # exactly the median
+        paint: none
+      "Eastline Mechanical & Restoration Corp":
+        kind: priced
+        value: 80000.00
+        var: -0.215686             # (80,000-102,000)/102,000
+        paint: {color: cyan, rule: R12}   # 80,000 <= 102,000*0.80 = 81,600
+        comment_contains_all: ["[FALKE R12]", "more than 20% below the bid benchmark"]
+      "Delta Gulf Contracting LLC": {kind: priced, value: 120000.00, var: 0.176471, paint: none}
+      "Alpha Restoration Group LLC": {kind: priced, value: 100000.00, var: -0.019608, paint: none}
+
+    "DIV 02 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: missing
+        paint: {color: red, rule: R5}
+        comment_contains_all: ["[FALKE R5]", "No pricing submitted for a division priced by other bidders — R5"]
+      "Fairway Building Group Inc.":
+        kind: by_owner
+        token: "Not Applicable"    # ENC-1: bidder's VERBATIM token, italic, NO paint
+        paint: none
+        comment_contains_all: ["[FALKE R3/R8]", "Approved classification: Not Applicable (R3/R6/R8)"]
+      "Beacon Shoreline Builders Inc.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Eastline Mechanical & Restoration Corp":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Delta Gulf Contracting LLC":
+        kind: priced
+        value: 160000.00
+        var: 0.230769
+        paint: none                # yellow candidate SUPPRESSED (n=2 < 3, Q5)
+      "Alpha Restoration Group LLC":
+        kind: priced
+        value: 100000.00
+        var: -0.230769
+        paint: none                # cyan candidate SUPPRESSED (n=2 < 3, Q5)
+
+    "DIV 03 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Fairway Building Group Inc.":
+        kind: priced
+        value: 310000.00           # engine-DERIVED: 250,000 + 60,000, no stated subtotal
+        var: -0.347368             # (310,000-475,000)/475,000 (M-2 median)
+        paint: {color: cyan, rule: R12}   # cyan holds: 310,000 <= 475,000*0.80 = 380,000
+        # REM-2 disclosure APPENDED to the cyan comment (variance pass runs
+        # first, REM-2 appends). Stated CCS 780,000 == sum of displayed priced
+        # divisions (110,000+310,000+360,000) -> plain REM-2 text, NO
+        # composition-delta sentence, NO dangling "see AUDIT".
+        comment_contains_all:
+          - "[FALKE R12]"
+          - "more than 20% below the bid benchmark"
+          - "[ARA REM-2]"
+          - "Subtotal DERIVED from priced line items"
+      "Beacon Shoreline Builders Inc.": {kind: priced, value: 520000.00, var: 0.094737, paint: none}
+      "Eastline Mechanical & Restoration Corp": {kind: priced, value: 450000.00, var: -0.052632, paint: none}
+      "Delta Gulf Contracting LLC":
+        kind: priced
+        value: 508000.00           # stated subtotal (displayed); lines sum 500,000
+        var: 0.069474              # (508,000-475,000)/475,000 — VAR% still
+                                   # written vs the fenced median (cell stays
+                                   # R20 red; red never downgraded, R16)
+        paint: {color: red, rule: R20}
+        # delta 8,000 > max($5, 0.5% x 508,000 = 2,540) -> R20 red
+        comment_contains_all: ["[FALKE R20]", "R20"]
+      "Alpha Restoration Group LLC": {kind: priced, value: 500000.00, var: 0.052632, paint: none}
+
+    "DIV 07 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Fairway Building Group Inc.": {kind: priced, value: 360000.00, var: -0.10, paint: none}
+      "Beacon Shoreline Builders Inc.":
+        kind: priced
+        value: 400000.00           # RE-ARMED (GOLD-DEV-10 fix PR, Marvin ruling (4)):
+        var: 0.0                   # Beacon (the RECLASS bidder) carries the ITEMIZED
+        paint: none                # allowance division (300,000 + 60,000 + 40,000-ALLOW,
+                                   # stated 400,000). The fixed engine passes untouched
+                                   # divisions through byte-identical — a regression to
+                                   # whole-bid re-derivation would show 360,000 + a false
+                                   # R20 red here, and this cell catches it.
+      "Eastline Mechanical & Restoration Corp": {kind: priced, value: 380000.00, var: -0.05, paint: none}
+      "Delta Gulf Contracting LLC":
+        kind: priced
+        value: 400000.00           # lines sum 398,500; delta 1,500 <= max($5, 0.5% x
+        var: 0.0                   # 400,000 = 2,000) -> NO R20 paint (within Falke
+        paint: none                # tolerance). AUDIT still fires at $1 — GOLD-DEV-2.
+      "Alpha Restoration Group LLC":
+        kind: priced
+        value: 400000.00           # LUMP_SUM (took Beacon's old shape in the re-arm swap)
+        var: 0.0
+        paint: none
+
+    "DIV 09 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Fairway Building Group Inc.":
+        kind: not_comparable       # division composed entirely of NC lines (ENC-2)
+        value: 145000.00           # displayed as submitted, NEVER benchmarked
+        paint: none
+        comment_contains_all: ["[ARA NC/R7]", "Not Comparable — excluded from benchmark (R7/R8)"]
+      "Beacon Shoreline Builders Inc.":
+        kind: excluded             # input: stated $0.00 subtotal over Excluded lines
+        token: "Excluded"          # -> R28 language, NOT generic R6 zero
+        paint: {color: red, rule: R28}
+        comment_contains_all: ["[FALKE R28]", "Exclusion without user approval — R28"]
+        # GOLD-DEV-10 FIXED: the leveled view passes this untouched division
+        # through byte-identical, so REM-1 EXPLICIT_ZERO survives on BOTH
+        # views and div_status classifies via the stated-$0 line consult
+        # (all lines Excluded -> red "Excluded" + R28) on both.
+      "Eastline Mechanical & Restoration Corp": {kind: priced, value: 190000.00, var: -0.05, paint: none}
+      "Delta Gulf Contracting LLC":
+        kind: priced
+        value: 250000.00
+        var: 0.25
+        paint: {color: yellow, rule: R13}   # 250,000 >= 200,000*1.20 = 240,000
+        comment_contains_all: ["[FALKE R13]", "more than 20% above the bid benchmark"]
+      "Alpha Restoration Group LLC": {kind: priced, value: 200000.00, var: 0.0, paint: none}
+
+    "DIV 11 00 00":
+      # Beacon's mirror shows 12,000 here; the LEVELED view is vacated by the
+      # GOLD_BEACON_DUMPSTER reclass and NOBODY else priced it -> blank band,
+      # no paint for any bidder (phantom-gap safe because no peer priced it —
+      # see GOLD-DEV-8 for the armed writer-side landmine we deliberately do
+      # NOT trigger in v1).
+      all_bidders: {kind: missing_or_blank, paint: none}
+
+    "DIV 22 00 00":
+      "Cypress Coast Plumbing Co.":
+        kind: priced
+        value: 300000.00
+        var: 0.132075
+        paint: none                # 300,000 < 318,000 (1.2x) -> neutral
+      "Fairway Building Group Inc.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Beacon Shoreline Builders Inc.":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Eastline Mechanical & Restoration Corp":
+        kind: priced
+        value: 265000.00           # split-derived: 150,000 + 90,000 + 25,000 (held unmatched line)
+        var: 0.0
+        paint: none
+      "Delta Gulf Contracting LLC":
+        kind: missing
+        paint: {color: red, rule: R5}
+      "Alpha Restoration Group LLC":
+        kind: priced
+        value: 150000.00
+        var: -0.433962             # (150,000-265,000)/265,000
+        paint: {color: cyan, rule: R12}   # 150,000 <= 212,000 (0.8x)
+        comment_contains_all: ["[FALKE R12]", "more than 20% below the bid benchmark"]
+
+    "DIV 23 00 00":
+      all_bidders: {kind: missing_or_blank, paint: none}   # Echo's empty split secondary
+
+  # ---------------------------------------------------------------------------
+  # LINE ROWS (COST column). No unified line is priced by >=2 bidders in this
+  # set (descriptions deliberately <60% word overlap), so there are NO
+  # line-level benchmarks/variance — line-level paint fires only via R6.
+  # ---------------------------------------------------------------------------
+  line_rows:
+    "DIV 01 00 00":               # from Beacon's leveled items (others lump-sum)
+      - {desc: "Project management & site supervision", bidder: "Beacon Shoreline Builders Inc.", value: 60000.00, paint: none}
+      - {desc: "Temporary facilities & protection", bidder: "Beacon Shoreline Builders Inc.", value: 30000.00, paint: none}
+      - {desc: "Dumpster rental & waste hauling", bidder: "Beacon Shoreline Builders Inc.", value: 12000.00, paint: none}  # reclassed IN (leveled only)
+    "DIV 02 00 00":
+      # ENC-5 LANDED (W-D): line-level by-owner/excluded cells render the
+      # bidder's classification token, italic, NO paint, on the decision view.
+      - {desc: "Site demolition & clearing", bidder: "Fairway Building Group Inc.",
+         token: "Not Applicable", italic: true}
+    "DIV 03 00 00":
+      - {desc: "Balcony slab edge spall repair", bidder: "Alpha Restoration Group LLC", value: 300000.00}
+      - {desc: "Post-tension tendon repair & restressing", bidder: "Alpha Restoration Group LLC", value: 150000.00}
+      - {desc: "Structural column & beam restoration", bidder: "Alpha Restoration Group LLC", value: 50000.00}
+      - {desc: "Garage slab concrete repairs", bidder: "Delta Gulf Contracting LLC", value: 200000.00}
+      - {desc: "Shear wall crack injection & structural repair", bidder: "Delta Gulf Contracting LLC", value: 180000.00}
+      - {desc: "Stair tower concrete restoration", bidder: "Delta Gulf Contracting LLC", value: 120000.00}
+      - {desc: "Garage level spall & delamination repair", bidder: "Fairway Building Group Inc.", value: 250000.00}
+      - {desc: "Building expansion joint replacement", bidder: "Fairway Building Group Inc.", value: 60000.00}
+    "DIV 07 00 00":
+      # Re-armed shape (b): the allowance division now sits on Beacon, the
+      # RECLASS bidder (GOLD-DEV-10 fix PR, Marvin ruling (4)).
+      - {desc: "Balcony & walkway deck waterproofing systems", bidder: "Beacon Shoreline Builders Inc.", value: 300000.00}
+      - {desc: "Exterior joint sealants & deck coating replacement", bidder: "Beacon Shoreline Builders Inc.", value: 60000.00}
+      - desc: "Sealant & coating material allowance"
+        bidder: "Beacon Shoreline Builders Inc."
+        value: 40000.00
+        paint: none
+        note: >-
+          Allowance renders as a plain number on the leveled sheet (RISK-3 —
+          no on-matrix marker; the ALLOWANCE_PRESENT flag lives on AUDIT).
+      - {desc: "Main roof membrane replacement", bidder: "Delta Gulf Contracting LLC", value: 250000.00}
+      - {desc: "Perimeter sheet metal & flashing", bidder: "Delta Gulf Contracting LLC", value: 148500.00}
+    "DIV 09 00 00":
+      # ENC-5 LANDED: Beacon's excluded lines render the italic token; the
+      # per-line severity lives on AUDIT (division-level EXPLICIT_EXCLUSION
+      # here, since the whole division is excluded — ENC-6 dedup).
+      - {desc: "Interior corridor painting", bidder: "Beacon Shoreline Builders Inc.",
+         token: "Excluded", italic: true}
+      - {desc: "Lobby flooring & base", bidder: "Beacon Shoreline Builders Inc.",
+         token: "Excluded", italic: true}
+      - desc: "Unit interior refresh package (owner option)"
+        bidder: "Fairway Building Group Inc."
+        value: 145000.00
+        paint: none
+        comment_contains_all: ["[ARA NC/R7]", "Not Comparable — excluded from benchmark (R7/R8)"]
+    "DIV 22 00 00":
+      - {desc: "Riser piping replacement — all stacks, floors 1 through 12", bidder: "Cypress Coast Plumbing Co.", value: 260000.00}
+      - {desc: "Unit angle stop & shutoff valve replacement", bidder: "Cypress Coast Plumbing Co.", value: 40000.00}
+      - desc: "Permit & inspection fees"
+        bidder: "Cypress Coast Plumbing Co."
+        value: 0.00
+        paint: {color: red, rule: R6}     # line-level explicit zero, unclassified
+        comment_contains_all: ["[FALKE R6]", "Zero value without approved classification — R6"]
+      - {desc: "Domestic water distribution renewal, phases 1-3", bidder: "Eastline Mechanical & Restoration Corp", value: 150000.00}
+      - {desc: "Sanitary waste stack repairs, common areas", bidder: "Eastline Mechanical & Restoration Corp", value: 90000.00}
+      - {desc: "General building systems contingency", bidder: "Eastline Mechanical & Restoration Corp", value: 25000.00}  # unmatched split line, HELD here (RED on AUDIT, not on-sheet)
+
+  # ---------------------------------------------------------------------------
+  # FOOTER (leveled display values = additive composition; the mirror renders
+  # the SAME numbers — both consume grand_total_component_amounts()).
+  # Order: [CCS, GL, BR, GC_FEE, OHP, OTHER_FEES, BOND, FEES_SUBTOTAL, GRAND_TOTAL]
+  # ---------------------------------------------------------------------------
+  footer:
+    "Cypress Coast Plumbing Co.":       [300000.00, 0, 0, 0, 0, 0, 0, 0.00, 300000.00]
+    "Fairway Building Group Inc.":      [780000.00, 10000.00, 5000.00, 30000.00, 0, 0, 8000.00, 53000.00, 833000.00]
+      # Fairway's stated other_fees 45,000 == GL+BR+GC exactly -> MEMO, rendered
+      # 0 (never double-counted); GT = 780,000+10,000+5,000+30,000+8,000 = 833,000
+    "Beacon Shoreline Builders Inc.":   [1022000.00, 0, 0, 60000.00, 0, 35000.00, 0, 95000.00, 1117000.00]
+      # GL/BR absent AND other_fees unexplained by stated fee rows -> ADDITIVE
+      # (insurance-folded pattern); GT = 1,022,000+60,000+35,000 = 1,117,000
+    "Eastline Mechanical & Restoration Corp": [1365000.00, 14000.00, 0, 68250.00, 0, 0, 0, 82250.00, 1447250.00]
+      # legacy 17-020 -> GL, 17-040 -> GC fee, carried in footer fields
+    "Delta Gulf Contracting LLC":       [1438000.00, 12000.00, 0, 70000.00, 40000.00, 0, 0, 122000.00, 1560000.00]
+    "Alpha Restoration Group LLC":      [1450000.00, 15000.00, 10000.00, 87000.00, 0, 0, 20000.00, 132000.00, 1582000.00]
+      # bond INSIDE the grand total (the common bonded-bid presentation)
+  grand_total_paint: none_for_all_bidders   # every stated GT == component sum (R21 clean)
+
+  # ---------------------------------------------------------------------------
+  # ALTERNATES section (never in base comparison)
+  # ---------------------------------------------------------------------------
+  alternates:
+    - {bidder: "Fairway Building Group Inc.", desc_contains: "DEDUCT ALTERNATE 1", value: -25000.00}
+    - {bidder: "Alpha Restoration Group LLC", desc_contains: "ADD ALTERNATE 1", value: 95000.00}
+
+  # ---------------------------------------------------------------------------
+  # R32 SUMMARY BLOCK (per bidder, COST SUBTOTALS column).
+  # Red/Cyan/Yellow = PaintTracker.by_bidder (painted cells on this sheet).
+  # Avg Variance = mean of that bidder's written VAR% fractions (DIV 03 VARs
+  # recomputed vs the M-2 fenced median 475,000 — W-D gold flip):
+  #   Cypress: (+0.132075)/1                                        = 0.132075
+  #   Fairway: (0.078431 - 0.347368 - 0.10)/3                       = -0.122979
+  #   Beacon:  (0 + 0.094737 + 0)/3                                 = 0.031579
+  #   Echo:    (-0.215686 - 0.052632 - 0.05 - 0.05 + 0)/5           = -0.073664
+  #   Delta:   (0.176471 + 0.230769 + 0.069474 + 0 + 0.25)/5        = 0.145343
+  #   Alpha:   (-0.019608 - 0.230769 + 0.052632 + 0 + 0 - 0.433962)/6 = -0.105285
+  # ---------------------------------------------------------------------------
+  summary_block:
+    "Cypress Coast Plumbing Co.":
+      total_bid: 300000.00
+      adjusted_total: 300000.00
+      red: 6        # DIV 01 R6 + DIV 02/03/07/09 R5 + DIV 22 line R6
+      cyan: 0
+      yellow: 0
+      avg_variance: 0.132075
+    "Fairway Building Group Inc.":
+      total_bid: 833000.00
+      adjusted_total: 833000.00
+      red: 1        # DIV 22 R5
+      cyan: 1       # DIV 03
+      yellow: 0
+      avg_variance: -0.122979
+    "Beacon Shoreline Builders Inc.":
+      total_bid: 1117000.00
+      adjusted_total: 1117000.00
+      red: 3        # DIV 02 R5 + DIV 09 R28 + DIV 22 R5
+      cyan: 0
+      yellow: 0
+      avg_variance: 0.031579
+    "Eastline Mechanical & Restoration Corp":
+      total_bid: 1447250.00
+      adjusted_total: 1447250.00
+      red: 1        # DIV 02 R5
+      cyan: 1       # DIV 01
+      yellow: 0
+      avg_variance: -0.073664
+    "Delta Gulf Contracting LLC":
+      total_bid: 1560000.00
+      adjusted_total: 1560000.00
+      red: 2        # DIV 03 R20 + DIV 22 R5
+      cyan: 0
+      yellow: 1     # DIV 09
+      avg_variance: 0.145343
+    "Alpha Restoration Group LLC":
+      total_bid: 1582000.00
+      adjusted_total: 1582000.00
+      red: 0
+      cyan: 1       # DIV 22
+      yellow: 0
+      avg_variance: -0.105285
+
+  paint_totals:     # PaintTracker.counts (also printed on the console report)
+    red: 13
+    cyan: 3
+    yellow: 1
+    neutral: 18     # DIV01:4, DIV02:2(suppressed count as neutral), DIV03:3,
+                    # DIV07:5, DIV09:2, DIV22:2
+    gate_suppressed: 2   # both DIV 02 variance candidates (Q5, n=2)
+
+# =============================================================================
+# AUDIT SHEET — full expected register.
+# Assert as a SET keyed (contractor, division, code, status, view); writer
+# sorts status -> contractor -> division, so row order is derivable but the
+# set + totals are the contract. `value` asserts the Value column exactly;
+# omit = don't assert.
+# =============================================================================
+audit_sheet:
+  totals: {RED: 5, YELLOW: 35, GREEN: 18, rows: 58}
+  # W-D ENC-6 + GOLD-DEV-7 rule (3) recount (Marvin pre-compute, ratified on
+  # the first W-D harness run): 58 = 4R+36Y+18G, +1 RED (Beacon DIV 09
+  # EXPLICIT_EXCLUSION), -1 YELLOW (Fairway DIV 02 SCOPE_GAP deleted under
+  # rule 3), BY_OWNER line->division swap neutral -> 58 rows / RED 5 /
+  # YELLOW 35 / GREEN 18.
+  # Recounted across the two wave-two fixing PRs, from the original 60/39/17:
+  # * GOLD-DEV-10/8 PR (Marvin ruling (4)): Beacon DIV 09 SCOPE_GAP ->
+  #   ARITHMETIC_VERIFIED (Y-1/G+1); DIV 07 re-arm swap (Alpha AV->LUMP_SUM,
+  #   Beacon LUMP_SUM->AV, ALLOWANCE_PRESENT moves Alpha->Beacon) nets zero.
+  # * GOLD-DEV-7 rules (1)+(2) PR (Marvin D1 ruling): BOTH Echo DIV 23 rows
+  #   deleted (LUMP_SUM_DIVISION via rule 1 — the D1 defect row — and the
+  #   "$0"-median SCOPE_GAP_IMPLICIT via rule 2), rows -2, YELLOW -2.
+  #   (Marvin's D1 note pre-authorized 59/38 counting the LUMP_SUM row alone;
+  #   rule 2 of his own GOLD-DEV-7 ruling removes the second row in the same
+  #   fix — his ruling text lists both Echo DIV 23 deletions explicitly.)
+  # Fairway DIV 02 SCOPE_GAP stays until rule (3) lands (ordering constraint).
+  rows:
+    "Alpha Restoration Group LLC":
+      - [DIV 01 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$100,000"]
+      - [DIV 02 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$100,000"]
+      - [DIV 03 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$500,000"]
+      - [DIV 07 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$400,000"]
+        # re-arm swap: Alpha took Beacon's old LUMP_SUM DIV 07 shape
+      - [DIV 09 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$200,000"]
+      - [DIV 22 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$150,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$1,582,000"]   # footer reconciles
+      - [null,         GC_FEE_NORMAL,       GREEN,  leveled, "6.0%"]
+    "Beacon Shoreline Builders Inc.":
+      - [DIV 11 00 00, KNOWN_FIRM_RECLASSIFIED, YELLOW, both, "DIV 11 00 00 → DIV 01 00 00"]
+      - [DIV 01 00 00, ARITHMETIC_VERIFIED, GREEN,  leveled, "$102,000"]
+        # view=leveled (not both): DIV 01 is reclass-TOUCHED for this bidder,
+        # so the row carries the leveled subtotal (mirror shows 90,000)
+      - [DIV 02 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$130,000"]
+      - [DIV 03 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$520,000"]
+      - [DIV 07 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$400,000"]
+        # re-arm swap (GOLD-DEV-10 ruling (4)): Beacon carries the ITEMIZED
+        # allowance division; 300,000 + 60,000 + 40,000 ALLOW == stated
+        # 400,000. view=both — DIV 07 is NOT reclass-touched, and the fixed
+        # engine passes it through byte-identical on the leveled view.
+      - [DIV 07 00 00, ALLOWANCE_PRESENT,   YELLOW, both,    "ALLOW $40,000"]   # line: Sealant & coating material allowance
+      - [DIV 09 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$0"]
+        # GOLD-DEV-10 FIXED (was the defect-tagged SCOPE_GAP_IMPLICIT
+        # "$195,000" row): REM-1 EXPLICIT_ZERO survives the leveled view,
+        # so the register carries the verified-$0 story alongside the
+        # exclusion row below.
+      - [DIV 09 00 00, EXPLICIT_EXCLUSION,  RED,    both,    "Excluded"]
+        # GOLD-DEV-3 CLOSED (W-D ENC-6 rule 1): the fully-excluded division
+        # now has a first-class division-level RED row (dedup: NO per-line
+        # rows), message carries the estimated cost impact = the ONE M-2
+        # field median ($200,000 — the plug/add-back discipline).
+      - [DIV 22 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$265,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$1,117,000"]
+      - [null,         GC_FEE_NORMAL,       GREEN,  leveled, "5.9%"]
+      - [null,         INSURANCE_NOT_STATED, YELLOW, both,   null]
+    "Cypress Coast Plumbing Co.":
+      - [DIV 01 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    null]   # $0 subtotal -> value None
+      - [DIV 02 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$130,000"]
+      - [DIV 03 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$475,000"]
+        # W-D M-2 flip: gap string cites the ONE fenced median (Delta R20 out)
+      - [DIV 07 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$400,000"]
+      - [DIV 09 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$200,000"]
+        # GOLD-DEV-4 CLOSED (W-D M-2): the audit median now fences Fairway's
+        # Not-Comparable-composed 145,000 exactly as the sheet does — the gap
+        # string cites the number the board sees (200,000).
+      - [DIV 22 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$300,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$300,000"]
+      - [null,         GC_FEE_MISSING,      YELLOW, both,    null]
+      - [null,         INSURANCE_NOT_STATED, YELLOW, both,   null]
+    "Delta Gulf Contracting LLC":
+      - [DIV 01 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$120,000"]
+      - [DIV 02 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$160,000"]
+      - [DIV 03 00 00, ARITHMETIC_DISCREPANCY, RED, both,    "$8,000"]
+      - [DIV 07 00 00, ARITHMETIC_DISCREPANCY, RED, both,    "$1,500"]
+        # defect: GOLD-DEV-2 — $1,500 is WITHIN Falke's max($5,0.5%) sheet
+        # tolerance (no paint) but audit.py still flags RED at the legacy $1.
+      - [DIV 09 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$250,000"]
+      - [DIV 22 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$265,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$1,560,000"]
+      - [null,         GC_FEE_NORMAL,       GREEN,  leveled, "4.9%"]
+    "Eastline Mechanical & Restoration Corp":
+      - [DIV 01 00 00, CODE_FORMAT_REMAPPED, YELLOW, both,   "01"]
+      - [DIV 03 00 00, CODE_FORMAT_REMAPPED, YELLOW, both,   "03"]
+      - [DIV 07 00 00, CODE_FORMAT_REMAPPED, YELLOW, both,   "07"]
+      - [DIV 09 00 00, CODE_FORMAT_REMAPPED, YELLOW, both,   "09"]
+      - [DIV 22 00 00, CODE_SPLIT_UNMATCHED, RED,   both,    "15"]
+        # line "General building systems contingency" — no keyword route
+        # between Plumbing/HVAC; held in DIV 22 (first split target)
+      - [DIV 01 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$80,000"]
+      - [DIV 02 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$130,000"]
+      - [DIV 03 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$450,000"]
+      - [DIV 07 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$380,000"]
+      - [DIV 09 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$190,000"]
+      - [DIV 22 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$265,000"]
+        # GOLD-DEV-7 rules (1)+(2) FIXED (noise-fix PR, Marvin D1 ruling):
+        # the two Echo DIV 23 rows are GONE — the zero-item split secondary
+        # no longer draws a LUMP_SUM_DIVISION row (harness D1, rule 1) nor a
+        # "$0"-median SCOPE_GAP_IMPLICIT (rule 2, same median>0 guard as the
+        # absent branch). Their ABSENCE is asserted by the register set-match
+        # + totals. Rule (3) (all-classified suppression, Fairway DIV 02) is
+        # DEFERRED to land with/after the GOLD-DEV-3/ENC-6 exclusion
+        # instrumentation (Marvin's ordering constraint).
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$1,447,250"]
+      - [null,         GC_FEE_NORMAL,       GREEN,  leveled, "5.0%"]
+    "Fairway Building Group Inc.":
+      - [DIV 01 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$110,000"]
+      - [DIV 02 00 00, BY_OWNER_DEDUCTED,   YELLOW, both,    "Not Applicable"]
+        # W-D ENC-6 rule 3 + GOLD-DEV-7 rule (3): the fully by-owner division
+        # now carries ONE division-level row with the bidder's VERBATIM token
+        # (replacing the old line-level "BY OTHERS" row), and its
+        # SCOPE_GAP_IMPLICIT row is DELETED — the classification row carries
+        # the story.
+      - [DIV 03 00 00, ARITHMETIC_VERIFIED, GREEN,  both,    "$310,000"]
+      - [DIV 07 00 00, LUMP_SUM_DIVISION,   YELLOW, both,    "$360,000"]
+      - [DIV 09 00 00, ARITHMETIC_DISCREPANCY, RED, both,    "$145,000"]
+        # defect: GOLD-DEV-5 — FALSE RED: audit check-1 omits NOT_COMPARABLE
+        # from its computed sum (0 vs 145,000) while normalize/falke_rules
+        # include it; the sheet is correctly unpainted. Flip on fix.
+      - [DIV 22 00 00, SCOPE_GAP_IMPLICIT,  YELLOW, leveled, "$265,000"]
+      - [null,         ARITHMETIC_VERIFIED, GREEN,  both,    "$833,000"]
+      - [null,         GC_FEE_NORMAL,       GREEN,  leveled, "3.9%"]
+
+# =============================================================================
+# BID_FORM (mirror) — v1.1 (W-D M-3/B4): the mirror renders what the bidder
+# wrote. Blanks are truly BLANK (never a fabricated 0.00), EXCLUDED renders
+# "Excluded" italic, BY_OWNER renders the bidder's verbatim token italic,
+# EXPLICIT_ZERO stays a real numeric 0.00, and NO ARA audit fill appears on
+# any mirror data cell (the col-C Normalization Note soft yellow remains).
+# =============================================================================
+mirror_sheet:
+  grand_totals:      # must equal the leveled GTs (Stage 6b cross-sheet invariant)
+    "Cypress Coast Plumbing Co.": 300000.00
+    "Fairway Building Group Inc.": 833000.00
+    "Beacon Shoreline Builders Inc.": 1117000.00
+    "Eastline Mechanical & Restoration Corp": 1447250.00
+    "Delta Gulf Contracting LLC": 1560000.00
+    "Alpha Restoration Group LLC": 1582000.00
+  reclass_faithfulness:   # Option C: dollars stay put on the mirror
+    beacon_div01_subtotal: 90000.00      # leveled shows 102,000
+    beacon_div11_subtotal: 12000.00      # leveled shows blank (vacated)
+    beacon_div11_note_contains: "normalize → DIV 01"   # Normalization Note, col C
+  echo_div22_subtotal: 265000.00         # code-format remap applies on the mirror too (lossless)
+  tokens:                                # M-3 state table on the written mirror
+    blank_subtotals:                     # truly EMPTY cells — never 0.00
+      - {bidder: "Cypress Coast Plumbing Co.", division: "DIV 02 00 00"}
+      - {bidder: "Cypress Coast Plumbing Co.", division: "DIV 09 00 00"}
+      - {bidder: "Fairway Building Group Inc.", division: "DIV 02 00 00"}
+        # Fairway DIV 02 subtotal is NULL_BLANK (all lines by-owner) — the
+        # LINE carries the verbatim token; the blank subtotal stays blank.
+    line_tokens:
+      - {bidder: "Beacon Shoreline Builders Inc.", division: "DIV 09 00 00",
+         desc: "Interior corridor painting", token: "Excluded", italic: true}
+      - {bidder: "Beacon Shoreline Builders Inc.", division: "DIV 09 00 00",
+         desc: "Lobby flooring & base", token: "Excluded", italic: true}
+      - {bidder: "Fairway Building Group Inc.", division: "DIV 02 00 00",
+         desc: "Site demolition & clearing", token: "Not Applicable",
+         italic: true}
+    explicit_zero_subtotals:             # the bidder DID write $0 — numeric
+      - {bidder: "Cypress Coast Plumbing Co.", division: "DIV 01 00 00", value: 0.00}
+      - {bidder: "Beacon Shoreline Builders Inc.", division: "DIV 09 00 00", value: 0.00}
+    no_ara_fills: true                   # no FFCCCC/FFF2CC/CCFFCC on mirror
+                                         # data cells (col C notes excepted)
+
+# =============================================================================
+# KNOWN-DEVIATION REGISTER (encoded-as-current where tagged `defect:` above).
+# Each is a REAL engine finding surfaced by hand-leveling this set — routed
+# through program coordination to the design queue. Fixing one flips its
+# expectation in the same PR.
+# =============================================================================
+known_deviations:
+  - id: GOLD-DEV-1
+    finding: >-
+      R7 partially implemented: a division subtotal that FAILS R20 (Delta
+      DIV 03, stated 508,000 vs lines 500,000, painted red) still enters the
+      benchmark median as a valid price. Rules-spec R7: "Invalid/red-flagged
+      values are EXCLUDED from benchmark calculations until corrected or
+      user-approved."
+    resolution: >-
+      RESOLVED 2026-07-15 (W-D M-2): ONE median-membership rule
+      (falke_rules.median_membership — div_status kind=="priced" AND
+      amount > 0 AND not R20-failed) now feeds the leveled benchmark block,
+      the variance pass, audit._compute_division_medians, and the scope-gap
+      value strings. Delta's R20-failed 508,000 leaves the DIV 03 median
+      (475,000 / n 4 / spread 0.442105 / Medium); its red cell and written
+      VAR% (+0.069474) remain. Pre-rules the W-G single-stats-brain build.
+    encoded_in: [benchmarks.DIV 03 00 00]
+  - id: GOLD-DEV-2
+    finding: >-
+      A4 partially implemented: audit.py ARITHMETIC_DISCREPANCY still fires at
+      the legacy $1 tolerance while the leveled sheet uses Falke's
+      max($5, 0.5%). Delta DIV 07 ($1,500 on 400,000): sheet clean, AUDIT RED.
+      One instrument, two tolerances for the same check.
+    encoded_in: [audit rows Delta DIV 07]
+  - id: GOLD-DEV-3
+    finding: >-
+      Exclusion-register hole: a stated-$0-over-Excluded division (Beacon
+      DIV 09) yields NO exclusion AuditItem — EXPLICIT_EXCLUSION keys on a
+      subtotal CellState (EXCLUDED) that normalize never produces, and
+      line-level EXCLUDED cells emit no audit row at all. The board-facing
+      sheet carries R28 red correctly; the register does not. ENC-6 candidate.
+    resolution: >-
+      RESOLVED 2026-07-15 (W-D ENC-6): exclusion/by-owner classifications are
+      now first-class register rows keyed on div_status (the dead
+      subtotal-state==EXCLUDED branch replaced). Fully-excluded division ->
+      ONE division-level EXPLICIT_EXCLUSION RED row (value "Excluded",
+      estimated cost impact = the M-2 field median; dedup: no per-line rows);
+      EXCLUDED line inside an otherwise-priced division -> one RED row per
+      line; fully by-owner division -> ONE division-level BY_OWNER_DEDUCTED
+      YELLOW row carrying the verbatim token (replaces the per-line rows;
+      per-line BY_OWNER remains only inside priced divisions).
+    encoded_in: [audit rows Beacon DIV 09 EXPLICIT_EXCLUSION]
+  - id: GOLD-DEV-4
+    finding: >-
+      audit._compute_division_medians does not fence Not-Comparable-composed
+      subtotals (state AMOUNT): DIV 09 audit median is 195,000 (includes
+      Fairway's 145,000 NC) while the sheet benchmark is 200,000 (fenced).
+      Gap-value strings on AUDIT cite the unfenced median.
+    resolution: >-
+      RESOLVED 2026-07-15 (W-D M-2): audit-side medians consume the ONE
+      membership rule (div_status-classified), so the NC-composed subtotal is
+      fenced on the register exactly as on the sheet — Cypress DIV 09 gap
+      string now cites $200,000, the number the board sees. Two medians on
+      one instrument was the trust-eroder; there is now one.
+    encoded_in: [audit rows Cypress DIV 09]
+  - id: GOLD-DEV-5
+    finding: >-
+      audit check-1 computed_sum omits NOT_COMPARABLE line amounts while
+      normalize._resolve_subtotal_cell and falke_rules.r20_math_fail include
+      them -> FALSE RED ARITHMETIC_DISCREPANCY ($145,000) on Fairway DIV 09;
+      the sheet is correctly unpainted. Sheet-clean/audit-red contradiction.
+    encoded_in: [audit rows Fairway DIV 09]
+  - id: GOLD-DEV-6
+    finding: >-
+      A BIDDER's own footer error (stated GT != stated component sum) trips
+      Stage 6b check 2 and quarantines the delivery with language that says
+      "this is a tool/formatting problem, not a finding about any contractor's
+      bid" — the wrong story for a bidder error. Demonstrated in the
+      quarantine variant (bond-on-top).
+    ruling: >-
+      MARVIN RULING 2026-07-15 (adjudicates harness D2 + this item as one
+      design). (1) Stage 6b check 2 gains a BIDDER-ERROR BRANCH: after
+      computing arith_delta, also compute bidder_footer_delta =
+      abs(grand_total_component_sum(bid.footer) - stated grand_total) from the
+      NORMALIZED bid (writer-independent — normalized_models is already
+      reconcile's single source of truth). If |arith_delta -
+      bidder_footer_delta| <= TIEOUT_TOLERANCE, the written sheet FAITHFULLY
+      reproduces the bidder's own footer inconsistency: emit NO
+      POST_WRITE_TIEOUT_FAILURE — the pre-write FOOTER_DISCREPANCY RED row and
+      the R21 red on the GT cell already tell the story in the RIGHT
+      vocabulary (bidder error). Otherwise fire exactly as today (true
+      tool-side failure). No coverage lost: a write error changes the delta;
+      checks 1 and 3 still guard the GT and division cells independently.
+      Rationale: bond-on-top is a RECURRING legitimate bid presentation —
+      quarantining the whole delivery (exit 3) for it every run is crying
+      wolf, and wolf-crying is what teaches a board to ignore a real
+      quarantine. (2) The banner's tool-attribution language then becomes TRUE
+      again — no wording change needed. (3) INDEPENDENTLY, _mark_cell
+      (write_matrix.py:1790-1801) must COMPOSE, never overwrite: quarantine
+      fill wins visually (established precedence: Quarantine > Falke Red), but
+      the comment must PREPEND the [QUARANTINE] text above any existing
+      comment ("\n\n--- prior flag on this cell ---\n" + old text) so a true
+      tool defect on an already-painted cell never erases the bid-level story.
+      (4) Same-PR gold-set flips: quarantine variant becomes a CLEAN exit-0
+      run (R21 red + "R21" comment survive on Quayside's GT; FOOTER_DISCREPANCY
+      RED row; no banner, no tie-out rows); the quarantine-chain proof moves
+      to a FAULT-INJECTION step in the harness (corrupt one GT cell in a copy
+      of the main-run workbook, call reconcile_written_matrix +
+      apply_quarantine directly, assert banner/composed-mark/AUDIT
+      rows/QUARANTINE line) — the only honest way to produce a true tool
+      defect. Until that PR, expectations-quarantine.yaml encodes CURRENT
+      behavior (quarantine mark overwrites R21) tagged defect D2.
+    resolution: >-
+      RESOLVED 2026-07-15 (wave-two engine patch 3, all four ruling parts):
+      (1) reconcile check 2 gained the bidder-error branch — bidder_footer_delta
+      computed via the RENDERED composition (grand_total_component_sum, memo
+      other_fees suppressed — Floyd W2-1), suppression per-bidder/per-sheet/
+      check-2-only (W2-2), delta-matched within TIEOUT_TOLERANCE; (2)+(3)
+      _mark_cell now COMPOSES (quarantine fill wins visually, comment prepends
+      above the prior story); (4) expectations-quarantine.yaml rewritten as a
+      clean exit-0 run with quarantine-chain ABSENCE assertions, and the chain
+      proof (banner / composed mark incl. prior-R20 survival / RED rows /
+      QUARANTINE line) moved to the harness fault-injection step in the SAME
+      change (Floyd W2-5); the exit-3 pipeline mapping stays covered by
+      tests/test_reconcile.py. The D2 count-vs-visible R32 incoherence is gone
+      with the same fix (the R21 paint the summary counts now survives).
+    encoded_in: [expectations-quarantine.yaml]
+  - id: GOLD-DEV-7
+    finding: >-
+      Audit-noise family. (i) Present-but-blank divisions raise
+      SCOPE_GAP_IMPLICIT with no median guard (Echo DIV 23: "Field median:
+      $0") and even when the division is by-owner classified (Fairway
+      DIV 02). (ii) Harness D1, same family: the zero-item split SECONDARY
+      division is created LUMP_SUM and draws a LUMP_SUM_DIVISION row with no
+      dollars behind it (Echo DIV 23). Over-flagging — safe direction, but
+      noisy and story-blurring.
+    ruling: >-
+      MARVIN RULING 2026-07-15 (adjudicates harness D1 + scopes the noise
+      fix). D1: the engine is WRONG — a division the bidder never submitted,
+      carrying zero dollars, is not "priced as a single total"; the row is
+      encoded-as-current (defect-tagged, totals 60/39) and the fix suppresses
+      it. Noise-fix spec, one bundle: (1) LUMP_SUM_DIVISION fires only when
+      the division carries a subtotal amount OR line items — zero-item,
+      no-subtotal shells (split secondaries, reclass-vacated divisions) emit
+      nothing; (2) the present-but-blank SCOPE_GAP_IMPLICIT branch gains the
+      SAME median guard as the absent branch (median > 0); (3) a
+      present-but-blank division whose line states are ALL classified
+      (BY_OWNER_OTHERS / EXCLUDED / NOT_COMPARABLE) raises NO scope-gap row —
+      the classification rows (BY_OWNER_DEDUCTED, future exclusion rows) carry
+      the story. ORDERING CONSTRAINT: rule (3) must land WITH OR AFTER the
+      GOLD-DEV-3/ENC-6 exclusion-instrumentation rows — otherwise an excluded
+      division loses its only (mislabeled) register trace (today Beacon
+      DIV 09's SCOPE_GAP row is the sole register echo of its exclusion).
+      Expectation flips in the fixing PR: delete Echo DIV 23 LUMP_SUM row,
+      delete Echo DIV 23 + Fairway DIV 02 SCOPE_GAP rows (Beacon DIV 09's row
+      flips separately under GOLD-DEV-10).
+    resolution: >-
+      FULLY RESOLVED 2026-07-15. Rules (1)+(2): wave-two engine patch 2 —
+      LUMP_SUM_DIVISION requires a subtotal amount OR line items, and the
+      present-but-blank SCOPE_GAP branch carries the median guard (now the
+      M-1 $20,000 materiality threshold, W-D). Rule (3): landed in the W-D
+      ENC-6 change (the ordering constraint — one change): a present-but-
+      blank division whose line states are ALL classified raises NO
+      scope-gap row; the Fairway DIV 02 SCOPE_GAP row is deleted and the
+      division-level BY_OWNER_DEDUCTED row carries the story.
+    encoded_in: [audit rows Fairway DIV 02 division-level BY_OWNER_DEDUCTED]
+  - id: GOLD-DEV-8
+    finding: >-
+      NOT ENCODED (deliberately not triggered): writer-side phantom gap — if a
+      peer bidder priced a reclass FROM-division, the vacated bidder's leveled
+      cell would paint R5 red ("no pricing submitted") with no vacated-
+      by-reclass suppression in the writer (audit suppresses; writer does
+      not). Armed landmine; v1 keeps DIV 11 unique to Beacon so the set stays
+      truthful. Fix before any known-firm reclass where peers price the FROM
+      division.
+    resolution: >-
+      RESOLVED 2026-07-15 (wave-two engine patch 1, bundled with GOLD-DEV-10
+      per Marvin ruling (3)): write_matrix's leveled R5 branch now consumes
+      the vacated-by-reclass set carried on the normalized view (the same
+      per-bidder set audit.py uses — Floyd W2-4) and renders a vacated
+      division blank with the "Reclassified — … carried in {TO} on this
+      view" comment, never R5 red. Peer-prices-the-FROM-division is covered
+      by a writer unit test (tests/test_option_c.py) rather than re-shaping
+      gold-v1; DIV 11 stays unique to Beacon here.
+  - id: GOLD-DEV-9
+    finding: >-
+      NOT ENCODED (statistical note): the 2-sigma GC_FEE_OUTLIER can NEVER
+      fire for a single outlier at n<=5 bids (max |dev|/sample-sigma =
+      (n-1)/sqrt(n) < 2). Near-dead code for typical 3-6 bid condo fields;
+      consider an absolute-percentage-point band instead.
+  - id: GOLD-DEV-10
+    finding: >-
+      HIGH PRIORITY — leveled-view subtotal corruption for reclass-matched
+      bidders: build_normalized_view -> _apply_reclass_moves re-derives
+      division_subtotal for EVERY division of the matched bidder, not just the
+      touched from/to pair. Consequences: (a) an ITEMIZED stated subtotal is
+      silently replaced by the line sum, so a bidder's R20 math error would
+      VANISH from the leveled view; (b) _derive_subtotal EXCLUDES allowance
+      amounts (unlike _resolve_subtotal_cell, which includes them), so an
+      allowance-bearing ITEMIZED division would display understated with a
+      FALSE R20 red (e.g. stated 400,000 with a 40,000 allowance -> 360,000);
+      (c) a stated-$0 subtotal (REM-1 EXPLICIT_ZERO) becomes NULL_BLANK,
+      shifting the audit story from verified-$0 to scope-gap (encoded: Beacon
+      DIV 09 SCOPE_GAP row). Dormant on the private real-project validation
+      set only because the reclass firm
+      carried none of these shapes. GOLD-SET v1 deliberately keeps the reclass
+      bidder free of shapes (a) and (b); when fixed, re-arm the set by moving
+      an allowance/math-error division onto the reclass bidder. Fix candidate:
+      re-derive ONLY the touched from/to divisions, include allowances, and
+      preserve stated subtotals elsewhere.
+    ruling: >-
+      MARVIN 2026-07-15 — Christine's wave-two fix shape is BLESSED with four
+      amendments. (1) Touched set = union of from_division and to_division
+      across THIS bidder's FIRED recommendations; every other division passes
+      through byte-identical (original DivisionBid, stated subtotal, cost
+      structure, REM-1 $0s intact). (2) Touched-division re-derivation must
+      use the SAME state->amount inclusion table as _resolve_subtotal_cell
+      (AMOUNT + EXPLICIT_ZERO + ALLOWANCE + NOT_COMPARABLE in; BY_OWNER /
+      EXCLUDED / blank out) — not merely "include allowances"; contract-test
+      the two sites against one shared table (W-G seam). (3) GOLD-DEV-8
+      bundles in, same seam: the writer gains the SAME per-bidder
+      vacated-by-reclass suppression audit already has — a division this
+      bidder's reclass fully vacated renders NO R5 red and NO value, with the
+      comment "Reclassified — this bidder's {FROM} scope is carried in {TO}
+      on this view (KNOWN_FIRM_RECLASSIFIED; see Bid_Form Normalization Note
+      and AUDIT)" so a peer-priced FROM division never tells the board a
+      false missing-scope story. (4) Same-PR gold flips: Beacon DIV 09 audit
+      row SCOPE_GAP_IMPLICIT($195,000) -> ARITHMETIC_VERIFIED GREEN "$0"
+      (REM-1 restored on the leveled view; remove the GOLD-DEV-10c branch
+      nuance note on the DIV 09 cell); RE-ARM shape (b) by reverting the
+      Alpha/Beacon DIV 07 swap (Beacon takes back the ITEMIZED
+      300,000+60,000+40,000-ALLOW division, Alpha returns to LUMP_SUM
+      400,000) and assert Beacon leveled DIV 07 == 400,000 with NO paint;
+      shape (a) (stated-subtotal preservation) is covered by a unit/contract
+      test rather than growing the golden set. Audit-row recount lands in the
+      same PR.
+    resolution: >-
+      RESOLVED 2026-07-15 (wave-two engine patch 1): _apply_reclass_moves now
+      rebuilds ONLY the touched from/to divisions (byte-identical pass-through
+      elsewhere), touched re-derivation uses the shared SUBTOTAL_SUM_STATES
+      table (same table as _resolve_subtotal_cell; contract-tested across
+      both sites plus reconcile's independent _AMOUNT_BEARING_STATES as a
+      value-equivalent fourth site — Floyd W2-3), and all four Marvin
+      amendments landed: (1) touched-set semantics, (2) shared inclusion
+      table, (3) GOLD-DEV-8 writer suppression, (4) gold flips (Beacon DIV 09
+      -> ARITHMETIC_VERIFIED "$0"; DIV 07 allowance re-arm on the reclass
+      bidder; shape (a) unit-tested in tests/test_normalize.py).
+    encoded_in: [audit rows Beacon DIV 09]
+
+not_exercised_in_v1:
+  # Covered by pytest and/or the private real-project anchor, or unimplemented:
+  - SCOPE_COMPLETE (would need all 20 divisions priced — size tradeoff)
+  - CROSS_BID_HIGH_VARIANCE, GC_FEE_OUTLIER (see GOLD-DEV-9)
+  - code-16 (Electrical/Fire-Alarm) split; code-14 UNMAPPED holding row
+  - UNRECOGNIZED_CODE_FORMAT, KNOWN_FIRM_AMBIGUOUS
+  - IMAGE_OCR_UNCERTAINTY (needs an IMAGE_SCAN input — extraction-layer; the
+    private real-project validation set is the anchor for that path)
+  - R19 unit-price math, R22–R27 (not carried by extraction / not implemented)
+  - structured .xlsx/.csv intake (Stage 0.5) — interim JSONs only in v1

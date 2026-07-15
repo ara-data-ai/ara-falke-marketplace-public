@@ -13,7 +13,7 @@ description: >-
   pipeline hard-stops (exit 2) without a confirmed $/SF denominator.
 argument-hint: "[bid-file ...] or [source-directory]"
 disable-model-invocation: false
-allowed-tools: Read, Bash, Write, Edit, Glob
+allowed-tools: Read, Write, Glob, Bash(ls *), Bash(mktemp *), Bash(mkdir *), Bash(cp *), Bash(*/venv/bin/python -c *), Bash(* -m src.pipeline *)
 ---
 
 # create-matrix — Bid Comparison Matrix Pipeline
@@ -625,7 +625,8 @@ override). Never bypass this by editing the engine.
 ### Run the engine
 
 Run the bundled engine as a module, passing `$INTERIM_DIR`, the chosen output
-path, the per-run `$PROJECT_CONFIG` from Step 1.5, and the resolved SF flag:
+path, the per-run `$PROJECT_CONFIG` from Step 1.5, the resolved SF flag, and
+the expected bid count:
 
 ```bash
 PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/engines/matrix" \
@@ -633,8 +634,17 @@ PYTHONPATH="${CLAUDE_PLUGIN_ROOT}/engines/matrix" \
   --interim-dir "$INTERIM_DIR" \
   --project-config "$PROJECT_CONFIG" \
   --sf-confirmed \
+  --expect-bids <N> \
   --out "<user-chosen output dir>/<filename from the rule above>" 2>&1
 ```
+
+**`--expect-bids <N>` — pass it on every run (defense-in-depth).** YOU know
+the real bid count from the Step 0c confirmation and the Step 2 outcomes:
+N = every extracted BidDocument JSON plus every structured `.xlsx`/`.csv`
+bid, NOT counting blank-template skips (skip sentinels). If the engine loads
+a different number of valid bids, it hard-stops (exit 2) BEFORE writing
+anything — a second, independent count that keeps a bid from silently going
+missing from the matrix.
 
 The `--out` filename MUST be the one you constructed via the *Output filename
 construction* rule above — i.e. it includes the ` - {rfp_label}` suffix whenever
@@ -650,19 +660,100 @@ denominator. Capture the full stdout. The pipeline runs these stages:
 1. Glob all `*.json` from `--interim-dir`
 2. Skip files where `skip=true` OR contractor_name is blank/template-like
 3. Validate each JSON against BidDocument (Pydantic v2)
-4. Resolve project identity + the SF-basis gate (exit 2 if unresolved)
+4. Input gates (duplicate contractor name, `--expect-bids` count) + project
+   identity + the SF-basis gate (exit 2 if any fail — nothing written)
 5. `normalize_bid()` on each valid BidDocument
 6. `compute_cross_bid_stats()` cross-bid normalization
 7. `audit_bids()` → the AUDIT log
 8. `write_matrix()` → writes the comparison xlsx to `--out`
+8b. Post-write tie-out self-check (engine Stage 6b) — re-reads the saved xlsx
+   and verifies it against the validated inputs; any failure LOUD-QUARANTINES
+   the affected figures and exits 3 (see *Handle exit 3* below)
 9. Print summary report
 
-### Handle exit 2 (the SF gate)
+### Exit-code contract (v2)
 
-If the pipeline exits with code **2**, it stopped at the SF-basis gate (or a
-missing required identity field). Read the printed message — it names the
-extracted SF or the missing field — relay it to the user, get the confirmation
-or override, and re-run with the right flag. Do NOT treat exit 2 as a crash.
+| Exit | Meaning | File written? |
+|------|---------|---------------|
+| 0 | Clean — matrix written, tie-out passed, EVERY confirmed input bid included | Yes |
+| 1 | Environment / nothing to do (missing interim dir, zero valid bids) | No |
+| 2 | Input gate hard-stop — SF basis unconfirmed, `--expect-bids` mismatch, or duplicate contractor name | No |
+| 3 | Loud quarantine — delivered WITH flags (post-write self-check failed on ≥1 figure) | Yes |
+| 4 | Delivered but INCOMPLETE — ≥1 input bid EXCLUDED (RED `INPUT_EXCLUDED` rows on AUDIT) | Yes |
+
+Precedence: when the conditions for 3 AND 4 both apply, the run exits **3**
+(the rendering defect is the louder class); the `INPUT_EXCLUDED` rows still
+land on the AUDIT sheet either way, so no exclusion is ever silent.
+
+### Handle exit 2 (input gates — nothing was written)
+
+Exit **2** is a pre-write hard stop at one of three input gates. Read the
+printed message — it names the gate — and do NOT treat exit 2 as a crash:
+
+- **SF-basis gate (or missing required identity field).** The message names
+  the extracted SF or the missing field. Relay it to the user, get the
+  confirmation or override, and re-run with `--sf-confirmed` or
+  `--sf-basis <value>`.
+- **`--expect-bids` mismatch.** The loaded valid-bid count differs from the
+  count you passed. The stdout lists every SKIPPED and FAILED file with its
+  reason — surface that list, then fix or re-extract the missing/failed
+  input(s) (or correct the count if you mis-counted) and re-run.
+- **Duplicate contractor name.** Two or more interim files claim the same
+  (case-folded) contractor name — the stdout names the contractor and the
+  files, and prints the operator remedies: **surface those remedies to the
+  user verbatim.** The usual cause is a stale JSON left from a prior attempt
+  (clear the interim folder of stale JSONs and re-run); if they are genuinely
+  two different bids from the same firm (e.g. base + alternate), rename the
+  contractor in one file (e.g. add " - Alternate") so each matrix column is
+  unambiguous, then re-run.
+
+### Handle exit 3 (loud quarantine — delivered WITH flags)
+
+Exit **3** means the pipeline's post-write self-check (Stage 6b tie-out) could
+not verify one or more figures in the workbook it just wrote. The file **WAS
+delivered** — with every affected figure loud-flagged: a RED banner on the
+`Bid_Form` and `Leveled_Normalized` sheets, a red mark + "verify against the
+source bid" comment on each affected cell, and a RED AUDIT row plus a
+QUARANTINE summary line on the AUDIT tab.
+
+Report it to the user with exactly this framing (fiduciary duty — do not
+soften it and do not misattribute it):
+
+- **This is a tool/formatting problem or a needs-human-review condition** — the
+  matrix tool failed its own self-check on those figures. It is **NEVER a
+  finding about a contractor's bid.** Do not say or imply that a bidder's
+  number is wrong, bad, or suspect because of a quarantine flag.
+- The matrix is delivered and usable ("delivered with flags"), but **every
+  quarantined figure must be verified by a human against the source bid before
+  it is relied on for an award recommendation.**
+- Name the quarantined figures (the stdout lists each mismatch:
+  `RED <code> | <contractor> [<division>]: <message>`).
+
+Do NOT treat exit 3 as a crash, do NOT bury it mid-report (the Step 4 report
+must LEAD with the quarantine disclosure when exit 3 occurred), and do NOT
+silently re-run hoping it clears — the flags exist so a non-technical board
+cannot mistake an unverified figure for a verified one.
+
+### Handle exit 4 (delivered, but INCOMPLETE — input bid(s) excluded)
+
+Exit **4** means the matrix WAS delivered and tied out clean, but one or more
+input bids failed JSON parse / schema validation / structured intake /
+normalization and are **NOT in the matrix**. Each exclusion is a RED
+`INPUT_EXCLUDED` row on the AUDIT tab naming the file and the reason (the
+stdout lists them too).
+
+Report it as **delivered-but-incomplete**:
+
+- **Name every excluded file/bidder** (from the stdout / the `INPUT_EXCLUDED`
+  AUDIT rows) — never let an exclusion pass unnamed.
+- Tell the user plainly: **the matrix is MISSING those bidders and must NOT
+  be used for an award until this is resolved.** Resolve = fix or re-extract
+  the excluded input(s) and re-run; the run must repeat clean (exit 0) before
+  the matrix is award-usable.
+
+Precedence: if the post-write self-check ALSO failed, the run exits **3**,
+not 4 — but the `INPUT_EXCLUDED` rows still land on the AUDIT sheet, so check
+for them on any exit-3 run as well (the stdout prints a NOTE when both apply).
 
 ### Parse the audit summary
 
@@ -675,6 +766,22 @@ Audit: N RED | N YELLOW | N GREEN
 Parse that line for the three counts. Also parse `implicit_gaps=N` per
 contractor from the Stage 5 output.
 
+**Also parse the Falke paint-count line** from the write stage stdout:
+
+```
+[write_matrix] Falke rules on Leveled_Normalized: red=N cyan=N yellow=N neutral=N paint_suppressed_lt3_bids=N
+```
+
+These are two DIFFERENT vocabularies and the Step 4 report surfaces BOTH,
+separately — never merge or sum them:
+
+- **Falke paint counts** — the client's own leveling vocabulary, painted on
+  `Leveled_Normalized` vs the benchmark: Red = error / requires correction,
+  Cyan = potentially underpriced (≤ benchmark × 0.80), Yellow = potentially
+  overpriced (≥ benchmark × 1.20), Neutral = within ±20% (no fill).
+- **ARA audit counts** — the RED/YELLOW/GREEN diagnostics on the `AUDIT` tab
+  (the `Audit: N RED | N YELLOW | N GREEN` line above).
+
 **Severity mapping for the Step 4 report:**
 - **RED** — critical; must resolve before award. Includes the generalization
   codes: `UNRECOGNIZED_CODE_FORMAT` (unrecognized cost-code format),
@@ -685,9 +792,9 @@ contractor from the Stage 5 output.
   firm's habitual misfile corrected).
 - **GREEN** — verified clean; no action required.
 
-If the pipeline exits non-zero for any reason OTHER than the exit-2 SF gate,
-surface the error to the user and stop — do not report a partial result as
-success.
+If the pipeline exits non-zero for any reason OTHER than exits 2, 3, or 4
+(each handled above per the exit-code contract), surface the error to the
+user and stop — do not report a partial result as success.
 
 ### Confirm output file was written
 
@@ -732,13 +839,26 @@ New firms (no quirk profile on file): <list any, per Step 2.5>
 
 ---
 
-### Audit Summary
+### Leveling Summary — Falke paint (Leveled_Normalized)
+
+| Paint   | Count | Meaning                                              |
+|---------|-------|------------------------------------------------------|
+| Red     | N     | Error / requires correction                          |
+| Cyan    | N     | Potentially underpriced (≤ benchmark × 0.80)         |
+| Yellow  | N     | Potentially overpriced (≥ benchmark × 1.20)          |
+| Neutral | N     | Within ±20% of benchmark (no fill)                   |
+
+### Audit Summary — ARA diagnostics (AUDIT tab)
 
 | Severity | Count | Meaning                                   |
 |----------|-------|-------------------------------------------|
 | RED      | N     | Must resolve before award recommendation  |
 | YELLOW   | N     | Review recommended; may affect leveling   |
 | GREEN    | N     | Verified clean; no action required        |
+
+(These are two different vocabularies — Falke paint is the client's leveling
+program on `Leveled_Normalized`; ARA severities are the audit log on `AUDIT`.
+Report both; never merge them.)
 
 ---
 
@@ -756,9 +876,25 @@ New firms (no quirk profile on file): <list any, per Step 2.5>
 <the --out path you passed in Step 3>
 File size: <size>
 
-Open the Bid_Form tab in the Excel file for the full leveled comparison.
-The AUDIT sheet contains the full audit log — 🔴 RED rows require resolution before bid award, 🟡 YELLOW rows need manual review, 🟢 GREEN rows are verified.
+The workbook has three sheets:
+- **Leveled_Normalized** — the leveled comparison where the award math lives.
+  Open THIS tab for the award comparison; Falke paint (Red/Cyan/Yellow vs the
+  benchmark) applies here, with the legend at the bottom of the sheet.
+- **Bid_Form** — a faithful mirror of each submitted bid (as-submitted
+  numbers, no leveling). Use it to verify any figure against the source bid.
+- **AUDIT** — the diagnostics log: 🔴 RED rows require resolution before bid
+  award, 🟡 YELLOW rows need manual review, 🟢 GREEN rows are verified.
 ```
+
+**If the run exited 3 (loud quarantine):** the report MUST open with the
+quarantine disclosure — framed per *Handle exit 3* in Step 3 (tool self-check
+failure or needs-human-review; never a finding about a contractor's bid) —
+before any of the sections above.
+
+**If the run exited 4 (input bid(s) excluded):** the report MUST open by
+naming the excluded file(s)/bidder(s) and stating that the matrix is
+INCOMPLETE — missing those bidders — and must NOT be used for an award until
+they are fixed/re-extracted and the run repeats clean (per *Handle exit 4*).
 
 If any extraction confidence was LOW (IMAGE_SCAN):
 > "Note: <Bidder> was extracted via Claude vision (IMAGE_SCAN). Values have been
@@ -802,11 +938,14 @@ firms are notified (Step 2.5) and get standard handling only.
 The blank, unfilled bid form is auto-detected (contractor_name blank or generic)
 and skipped with a sentinel. No action required. This is project-agnostic.
 
-**5. AUDIT tab**
-The pipeline produces two sheets: `Bid_Form` (the leveled matrix) and `AUDIT`
-(color-coded audit results). RED rows require resolution before bid award,
-YELLOW rows need manual review, and GREEN rows are verified. Have a qualified
-reviewer interpret critical flags for the board memo.
+**5. Three sheets, two vocabularies**
+The pipeline produces three sheets: `Bid_Form` (a faithful mirror of each
+submitted bid — as-submitted numbers, no leveling), `Leveled_Normalized` (the
+leveled comparison where the award math lives — Falke Red/Cyan/Yellow paint vs
+the benchmark, legend at the bottom of the sheet), and `AUDIT` (ARA
+diagnostics: RED rows require resolution before bid award, YELLOW rows need
+manual review, GREEN rows are verified). Have a qualified reviewer interpret
+critical flags for the board memo.
 
 **6. Extraction agents have no memory of prior runs**
 Each extraction agent reads its PDF fresh. If an interim JSON already exists in

@@ -212,10 +212,11 @@ class TestFalkeHouseFormat:
             assert _find_row_by_col(ws, 1, "GRAND_TOTAL")
 
     def test_no_legacy_audit_fill_on_leveled_sheet(self):
-        # A stated subtotal that contradicts the line-item sum raises the
-        # legacy ARITHMETIC_DISCREPANCY audit fill on the MIRROR subtotal —
-        # and, under v0.3.0, the same defect paints the FALKE red (R20) on
-        # the leveled sheet instead of any legacy ARA hue (§4.4/A1).
+        # A stated subtotal that contradicts the line-item sum is an
+        # ARITHMETIC_DISCREPANCY on the AUDIT register — and, under v0.3.0+,
+        # the same defect paints the FALKE red (R20) on the leveled sheet.
+        # W-D M-3/B4: the MIRROR carries NO ARA audit fills at all any more
+        # (the mirror asserts nothing — every ARA diagnostic lives on AUDIT).
         docs = [
             _doc("Alpha Builders", Decimal("100000"),
                  items=[LineItem(description="Project Management",
@@ -226,22 +227,34 @@ class TestFalkeHouseFormat:
         with tempfile.TemporaryDirectory() as d:
             out, _bids, items = _write(d, docs=docs, with_audit=True)
             assert items, "fixture must generate audit items"
+            assert any(i.code.value == "ARITHMETIC_DISCREPANCY" for i in items)
             wb = openpyxl.load_workbook(out)
 
-            # Mirror: legacy audit fill present on the subtotal cell.
+            # Mirror: NO ARA audit fill on any DATA cell (M-3/B4 — fills
+            # removed). The sweep stops at the GRAND_TOTAL footer row: the
+            # workbook LEGEND below it legitimately carries soft swatches.
             wsm = wb["Bid_Form"]
-            mirror_hexes = {
-                _hex(c) for row in wsm.iter_rows() for c in row
-            }
-            assert mirror_hexes & _LEGACY_AUDIT_HEXES, (
-                "mirror must keep its legacy audit fills"
+            m_gt = _find_row_by_col(wsm, 1, "GRAND_TOTAL")
+            mirror_offenders = [
+                c.coordinate
+                for row in wsm.iter_rows(min_row=1, max_row=m_gt)
+                for c in row
+                if _hex(c) in _LEGACY_AUDIT_HEXES
+            ]
+            assert mirror_offenders == [], (
+                f"ARA audit fills must be OFF the mirror (M-3/B4): "
+                f"{mirror_offenders}"
             )
 
-            # Leveled: NO legacy ARA audit hue anywhere; the R20 falke red
-            # covers the same defect.
+            # Leveled: NO legacy ARA audit hue on the data region (through
+            # the GRAND TOTAL row — legend swatches below are documentation);
+            # the R20 falke red covers the same defect.
             wsl = wb["Leveled_Normalized"]
+            l_gt = _find_row_by_col(wsl, 2, "GRAND TOTAL CONSTRUCTION COST")
             offenders = [
-                c.coordinate for row in wsl.iter_rows() for c in row
+                c.coordinate
+                for row in wsl.iter_rows(min_row=1, max_row=l_gt)
+                for c in row
                 if _hex(c) in _LEGACY_AUDIT_HEXES
             ]
             assert offenders == [], (
@@ -417,3 +430,180 @@ class TestFalkeBorderRails:
             below = ws.cell(row=gt_row + 1, column=_lev_col_start(0))
             assert below.border.left.style is None
             assert below.border.right.style is None
+
+
+class TestMirrorTokenRendering:
+    """M-3 (W-D): the mirror renders what the bidder wrote — blank cells stay
+    truly blank (never 0.00), EXCLUDED renders 'Excluded' italic, BY_OWNER
+    renders the verbatim token italic, EXPLICIT_ZERO stays a real numeric 0,
+    and no token/blank rendering ever trips Stage 6b (reconcile lockstep)."""
+
+    @staticmethod
+    def _token_docs():
+        excluder = BidDocument(
+            contractor_name="Excluder Co",
+            form_type=FormType.FALKE_STANDARD,
+            bid_document_input_type=InputType.DIGITAL_NATIVE,
+            divisions=[
+                DivisionBid(
+                    csi_code="DIV 09 00 00", division_name="Finishes",
+                    cost_structure=CostStructure.ITEMIZED,
+                    division_subtotal=Decimal("0"),
+                    line_items=[
+                        LineItem(description="Corridor painting",
+                                 is_excluded=True),
+                        LineItem(description="Lobby flooring",
+                                 is_excluded=True),
+                    ],
+                ),
+                DivisionBid(
+                    csi_code="DIV 02 00 00",
+                    division_name="Existing Conditions",
+                    cost_structure=CostStructure.ITEMIZED,
+                    division_subtotal=None,
+                    line_items=[
+                        LineItem(description="Site demolition and clearing",
+                                 is_by_owner_others=True,
+                                 by_others_verbatim="Not Applicable"),
+                    ],
+                ),
+                DivisionBid(
+                    csi_code="DIV 03 00 00", division_name="Concrete",
+                    cost_structure=CostStructure.ITEMIZED,
+                    division_subtotal=Decimal("100000"),
+                    line_items=[LineItem(description="Concrete repairs",
+                                         amount=Decimal("100000"))],
+                ),
+            ],
+            footer=BidFooter(
+                construction_cost_subtotal=Decimal("100000"),
+                grand_total=Decimal("100000"),
+                grand_total_confidence=GrandTotalConfidence.LOW,
+            ),
+            qualifications=BidQualifications(),
+            extraction_confidence=ExtractionConfidence.HIGH,
+        )
+        peer = _doc("Peer Builders", Decimal("120000"))
+        return [excluder, peer]
+
+    def _mirror(self, d):
+        docs = self._token_docs()
+        bids = compute_cross_bid_stats([normalize_bid(x) for x in docs])
+        items = audit_bids(bids)
+        out = Path(d) / "m.xlsx"
+        write_matrix(bids, out, _run_inputs(), audit_items=items)
+        wb = openpyxl.load_workbook(out)
+        ws = wb["Bid_Form"]
+        # Excluder's column.
+        from src.write_matrix import _col_start
+        col = next(_col_start(i) for i in range(2)
+                   if ws.cell(row=5, column=_col_start(i)).value == "Excluder Co")
+        return out, bids, items, ws, col
+
+    def test_tokens_blanks_and_zero_render_per_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            _out, _bids, _items, ws, col = self._mirror(d)
+
+            # Subtotal cells: EXPLICIT_ZERO (stated $0) renders numeric 0.00.
+            div09_sub = _find_row_by_col(ws, 2, "FINISHES SUBTOTAL")
+            c = ws.cell(row=div09_sub, column=col)
+            assert c.value == 0.0, "the bidder DID write $0 — numeric 0.00"
+
+            # Excluded LINE cells render the italic 'Excluded' token.
+            line_row = _find_row_by_col(ws, 2, "Corridor painting")
+            lc = ws.cell(row=line_row, column=col)
+            assert lc.value == "Excluded"
+            assert lc.font.italic is True
+            assert _hex(lc) not in _LEGACY_AUDIT_HEXES
+
+            # BY_OWNER line renders the VERBATIM token, italic, no fill.
+            bo_row = _find_row_by_col(ws, 2, "Site demolition and clearing")
+            bc = ws.cell(row=bo_row, column=col)
+            assert bc.value == "Not Applicable"
+            assert bc.font.italic is True
+
+            # BY_OWNER division's blank subtotal stays truly BLANK (NULL_BLANK
+            # per the M-3 state table — the line carries the token).
+            div02_sub = _find_row_by_col(ws, 2,
+                                         "EXISTING CONDITIONS SUBTOTAL")
+            assert ws.cell(row=div02_sub, column=col).value is None
+
+            # A division absent from the bid: subtotal + $/SF truly blank —
+            # never a fabricated 0.00 (Peer never bid DIV 07).
+            div07_sub = _find_row_by_col(
+                ws, 2, "THERMAL & MOISTURE PROTECTION SUBTOTAL")
+            assert ws.cell(row=div07_sub, column=col).value is None
+            assert ws.cell(row=div07_sub, column=col + 1).value is None
+
+    def test_reconcile_lockstep_no_false_quarantine(self):
+        """The token/blank mirror still ties out — Stage 6b zero failures."""
+        with tempfile.TemporaryDirectory() as d:
+            out, bids, items, _ws, _col = self._mirror(d)
+            failures = reconcile_written_matrix(out, bids, len(items))
+            assert failures == [], [f.message for f in failures]
+
+
+class TestAuditSheetInformationArchitecture:
+    """W-D B4/§2 + S2-3: the AUDIT key sits at the TOP of the tab, the View
+    column speaks the actual sheet names, and both data sheets carry the ONE
+    workbook legend."""
+
+    def test_key_at_top_view_sheet_names_and_legend_both_sheets(self):
+        from src.write_matrix import (
+            AUDIT_HEADER_ROW,
+            LEGEND_HEADER,
+            LEGEND_PRECEDENCE,
+            find_audit_header_row,
+        )
+        with tempfile.TemporaryDirectory() as d:
+            out, _bids, items = _write(d, with_audit=True)
+            assert items
+            wb = openpyxl.load_workbook(out)
+            wsa = wb["AUDIT"]
+
+            # Key block ABOVE the header row.
+            header_row = find_audit_header_row(wsa)
+            assert header_row == AUDIT_HEADER_ROW
+            top_text = " ".join(
+                str(wsa.cell(row=r, column=1).value or "")
+                for r in range(1, header_row)
+            )
+            assert "Total items audited:" in top_text
+            assert "RED Critical:" in top_text
+            assert "Board members: the decision view is Leveled_Normalized" \
+                in top_text
+
+            # View column: only sheet names / Both — never "As-Submitted",
+            # never bare "Leveled".
+            views = set()
+            r = header_row + 1
+            while wsa.cell(row=r, column=1).value not in (None, ""):
+                views.add(wsa.cell(row=r, column=2).value)
+                r += 1
+            assert views <= {"Both", "Bid_Form", "Leveled_Normalized"}, views
+
+            # ONE legend block, identical header + precedence, on BOTH data
+            # sheets.
+            for sheet in ("Bid_Form", "Leveled_Normalized"):
+                ws = wb[sheet]
+                _find_row_by_col(ws, 2, LEGEND_HEADER)
+                _find_row_by_col(ws, 2, LEGEND_PRECEDENCE)
+
+                # Marvin amendment (W-D, 2026-07-15): the ARA severities
+                # render THREE legend rows — one per severity, each with its
+                # OWN swatch in the single swatch column (col B), text in
+                # col C, each ending "Appears only on the AUDIT tab."
+                for text, hue in (
+                    ("AUDIT rows filled soft red — ARA severity RED: "
+                     "resolve before award. Appears only on the AUDIT tab.",
+                     "FFCCCC"),
+                    ("AUDIT rows filled soft yellow — ARA severity YELLOW: "
+                     "review. Appears only on the AUDIT tab.", "FFF2CC"),
+                    ("AUDIT rows filled soft green — ARA severity GREEN: "
+                     "verified. Appears only on the AUDIT tab.", "CCFFCC"),
+                ):
+                    r = _find_row_by_col(ws, 3, text)
+                    assert _hex(ws.cell(row=r, column=2)) == hue, (
+                        f"[{sheet}] severity row must carry its OWN swatch "
+                        f"{hue}, got {_hex(ws.cell(row=r, column=2))}"
+                    )

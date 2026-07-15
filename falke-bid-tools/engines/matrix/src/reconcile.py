@@ -57,6 +57,7 @@ from src.normalized_models import (
     GRAND_TOTAL_COMPONENT_KEYS,
     CellState,
     NormalizedBid,
+    grand_total_component_sum,
 )
 from src.write_matrix import (
     DIVISION_ROWS,
@@ -65,6 +66,7 @@ from src.write_matrix import (
     _col_start,
     _lev_col_start,
     _sort_bids,
+    find_audit_header_row,
 )
 
 # CellStates that contribute a real numeric amount to a subtotal. Held HERE so
@@ -344,7 +346,36 @@ def _check_sheet(
             )
             w_grand = _as_decimal(ws.cell(row=grand_total_row, column=col).value)
             arith_delta = abs(summed - w_grand)
-            if arith_delta > TIEOUT_TOLERANCE:
+            # BIDDER-ERROR BRANCH (Marvin GOLD-DEV-6 ruling (1); Floyd
+            # W2-1/W2-2): a bidder whose OWN stated grand total does not equal
+            # its component composition (e.g. the recurring bond-on-top
+            # presentation) produces the SAME delta in a faithfully written
+            # sheet. Compute the bidder's own footer delta from the NORMALIZED
+            # bid via the RENDERED composition — grand_total_component_sum
+            # (memo other_fees suppressed to 0), the same single source of
+            # truth the written footer rows consume — never raw footer fields
+            # (W2-1). If the written delta matches the bidder's own delta
+            # within tolerance, the sheet FAITHFULLY reproduces the bidder's
+            # inconsistency: no POST_WRITE_TIEOUT_FAILURE — the pre-write
+            # FOOTER_DISCREPANCY RED row and the R21 red on the GT cell
+            # already tell that story in the RIGHT vocabulary (bidder error,
+            # not tool defect). Suppression is per-bidder, per-sheet, check 2
+            # ONLY (W2-2): any write corruption moves arith_delta away from
+            # bidder_footer_delta and still fires here, and checks 1/3 guard
+            # the GT and division cells independently.
+            stated_gt = (
+                Decimal(str(bid.footer.grand_total.amount))
+                if (bid.footer.grand_total.amount is not None
+                    and bid.footer.grand_total.state == CellState.AMOUNT)
+                else Decimal("0")
+            )
+            bidder_footer_delta = abs(
+                grand_total_component_sum(bid.footer) - stated_gt
+            )
+            faithful_bidder_error = (
+                abs(arith_delta - bidder_footer_delta) <= TIEOUT_TOLERANCE
+            )
+            if arith_delta > TIEOUT_TOLERANCE and not faithful_bidder_error:
                 failures.append(_fail(
                     name,
                     f"[{sheet_name}] Footer arithmetic FAILED in the written sheet: "
@@ -500,16 +531,20 @@ def reconcile_written_matrix(
 def _count_audit_rows(wb: openpyxl.Workbook) -> int:
     """Count the AuditItem data rows written to the AUDIT sheet.
 
-    The writer lays items out from row 5, one per AuditItem, then leaves 2 blank
-    rows before a summary block. We count contiguous non-empty Status cells
-    (col A) from row 5 until the first blank — the data region — so the trailing
-    summary block is not miscounted as data.
+    The writer lays items out below the column-header row (W-D S2-3: the key
+    block now sits at the TOP of the tab, so the data region is located
+    label-anchored from the header — ``find_audit_header_row`` — never a
+    hardcoded row). We count contiguous non-empty Status cells (col A) below
+    the header until the first blank — the data region.
     """
     if "AUDIT" not in wb.sheetnames:
         return 0
     ws = wb["AUDIT"]
+    header_row = find_audit_header_row(ws)
+    if header_row is None:
+        return 0
     count = 0
-    row = 5  # data_start_row in _write_audit_sheet
+    row = header_row + 1
     while ws.cell(row=row, column=1).value not in (None, ""):
         count += 1
         row += 1

@@ -21,6 +21,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+from src import falke_rules
+from src.canon import SCOPE_GAP_MEDIAN_THRESHOLD
 from src.models import CostStructure, InputType
 from src.normalized_models import (
     CellState,
@@ -94,6 +96,9 @@ class AuditCode(str, Enum):
     KNOWN_FIRM_AMBIGUOUS    = "KNOWN_FIRM_AMBIGUOUS"   # name matched >1 known-firm profile (§5, C3)
     CODE_SPLIT_UNMATCHED    = "CODE_SPLIT_UNMATCHED"   # Mech/Elec line couldn't be split to a trade (§5)
     POST_WRITE_TIEOUT_FAILURE = "POST_WRITE_TIEOUT_FAILURE"  # written .xlsx cell ≠ blessed value (Stage 6b)
+    INPUT_EXCLUDED          = "INPUT_EXCLUDED"          # input bid dropped (parse/validation/intake/normalize) — NOT in the matrix (F1, exit 4)
+    SUBTOTAL_COMPOSITION_DISCREPANCY = "SUBTOTAL_COMPOSITION_DISCREPANCY"  # Σ displayed division subtotals ≠ stated CCS (ENC-3)
+    NEGATIVE_UNCLASSIFIED   = "NEGATIVE_UNCLASSIFIED"   # net-negative division subtotal without credit classification (R22)
 
 
 class AuditItem(BaseModel):
@@ -180,17 +185,21 @@ def _promote_summary_flags(bid: NormalizedBid) -> list[AuditItem]:
 
 def _compute_division_medians(bids: list[NormalizedBid]) -> dict[str, Decimal]:
     """
-    Compute per-division field medians across all bids.
-    Only includes non-zero subtotal amounts in the median calculation.
+    Compute per-division field medians across all bids using the ONE M-2
+    median-membership rule (falke_rules.median_membership): a subtotal enters
+    iff div_status kind == "priced" AND amount > 0 AND not R20-failed. This
+    is the SAME set the leveled benchmark block computes over, so the
+    register's scope-gap value strings cite the number the board sees
+    (closes GOLD-DEV-1 and GOLD-DEV-4 — NC-composed and R20-failed subtotals
+    are fenced here exactly as on the sheet).
     """
     amounts_by_div: dict[str, list[Decimal]] = {code: [] for code in CANONICAL_20}
 
     for bid in bids:
-        for div in bid.divisions:
-            if div.csi_code not in amounts_by_div:
-                continue
-            if div.subtotal_cell.state == CellState.AMOUNT and div.subtotal_cell.amount:
-                amounts_by_div[div.csi_code].append(div.subtotal_cell.amount)
+        for code in CANONICAL_20:
+            member = falke_rules.median_membership(bid, code)
+            if member is not None:
+                amounts_by_div[code].append(Decimal(str(member)))
 
     medians: dict[str, Decimal] = {}
     for code, vals in amounts_by_div.items():
@@ -261,18 +270,18 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
     # Pre-compute cross-bid medians (needed for checks 2 and 9)
     division_medians = _compute_division_medians(bids)
 
-    # Pre-compute cross-bid division subtotals for variance check (check 9)
-    # division_amounts_by_code[csi_code] = list of (contractor_name, amount) for non-zero bids
+    # Pre-compute cross-bid division subtotals for variance check (check 9).
+    # Same M-2 membership as the medians above — the spread and the median it
+    # compares against are computed over ONE set (never two dialects).
     division_amounts_by_code: dict[str, list[tuple[str, Decimal]]] = {
         code: [] for code in CANONICAL_20
     }
     for bid in bids:
-        for div in bid.divisions:
-            if div.csi_code not in division_amounts_by_code:
-                continue
-            if div.subtotal_cell.state == CellState.AMOUNT and div.subtotal_cell.amount:
-                division_amounts_by_code[div.csi_code].append(
-                    (bid.contractor_name, div.subtotal_cell.amount)
+        for code in CANONICAL_20:
+            member = falke_rules.median_membership(bid, code)
+            if member is not None:
+                division_amounts_by_code[code].append(
+                    (bid.contractor_name, Decimal(str(member)))
                 )
 
     # Pre-compute high-variance divisions (check 9)
@@ -313,9 +322,9 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
 
         # Phantom-gap fix (§6): divisions this bidder's reclass emptied must not
         # raise SCOPE_GAP_IMPLICIT — keyed to the `from_division` per bidder.
-        vacated_by_reclass = {
-            rec.from_division for rec in bid.reclass_recommendations
-        }
+        # Single derivation carried on the normalized view (Floyd W2-4);
+        # write_matrix's leveled R5 suppression consumes the same property.
+        vacated_by_reclass = bid.vacated_by_reclass
 
         # Mirror-honesty fix (Floyd/Marvin §8): a division-subtotal-bearing
         # intra-bid code (ARITHMETIC_VERIFIED/DISCREPANCY, LUMP_SUM_DIVISION) on a
@@ -354,9 +363,13 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
                 # Division entirely absent from bid — treat as scope gap if median is meaningful.
                 # Cross-bid signal: only with ≥2 bidders (no field to compare at n=1, §6).
                 # §6: a division fully drained by THIS bidder's reclass is not a gap.
+                # M-1 (W-D): the AUDIT scope-gap row is an ARA materiality
+                # diagnostic — thresholded at field median > $20,000 (ONE
+                # constant, canon.SCOPE_GAP_MEDIAN_THRESHOLD). The R5 red on
+                # the leveled sheet stays threshold-free (Falke program rule).
                 if (
                     cross_bid_enabled
-                    and median_val > Decimal("0")
+                    and median_val > SCOPE_GAP_MEDIAN_THRESHOLD
                     and csi_code not in vacated_by_reclass
                 ):
                     items.append(AuditItem(
@@ -376,12 +389,36 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
             subtotal_state = div.subtotal_cell.state
             subtotal_amount = div.subtotal_cell.amount
 
+            # ENC-6 (W-D): exclusion / by-owner instrumentation keys on the
+            # SAME state classification the leveled sheet renders
+            # (falke_rules.div_status), not on a subtotal CellState normalize
+            # never produces (the old dead EXCLUDED branch — GOLD-DEV-3).
+            kind, _kind_amt = falke_rules.div_status(bid, csi_code)
+
+            # GOLD-DEV-7 rule (3): a present-but-blank division whose line
+            # states are ALL classified (BY_OWNER / EXCLUDED / NC) raises NO
+            # scope-gap row — the classification rows carry the story.
+            # (Ordering constraint satisfied: rule 3 lands WITH the ENC-6
+            # rows below, in this one change.)
+            lines_all_classified = bool(div.line_item_cells) and all(
+                c.state in (CellState.BY_OWNER_OTHERS, CellState.EXCLUDED,
+                            CellState.NOT_COMPARABLE)
+                for c in div.line_item_cells.values()
+            )
+
             # Check 2: SCOPE_GAP_IMPLICIT — cross-bid signal (needs ≥2 bidders, §6).
             # §6 phantom-gap fix: skip a division this bidder's reclass vacated.
+            # GOLD-DEV-7 noise fix rule (2) (Marvin ruling 2026-07-15): the
+            # present-but-blank branch carries the SAME median guard as the
+            # absent branch above — now the M-1 materiality threshold
+            # (> $20,000, ONE constant in canon.py; the R5 red on the leveled
+            # sheet stays threshold-free per the Falke program).
             if (
                 cross_bid_enabled
                 and subtotal_state == CellState.NULL_BLANK
+                and median_val > SCOPE_GAP_MEDIAN_THRESHOLD
                 and csi_code not in vacated_by_reclass
+                and not lines_all_classified
             ):
                 items.append(AuditItem(
                     contractor_name=name,
@@ -396,24 +433,82 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
                     value=median_str,
                 ))
 
-            # Check 3: EXPLICIT_EXCLUSION
-            elif subtotal_state == CellState.EXCLUDED:
+            # ENC-6 (1): fully-excluded division → ONE division-level RED row
+            # (the scope-gap add-back discipline reaching the register).
+            # Dedup: division-level row only, NO per-line rows (below).
+            if kind == "excluded":
+                if median_val > Decimal("0"):
+                    impact = (
+                        f"field median {median_str}; a plug/add-back of this "
+                        f"magnitude is needed before this bidder's total is "
+                        f"compared as complete scope."
+                    )
+                else:
+                    impact = ("no field benchmark available — price the "
+                              "exclusion before comparison.")
                 items.append(AuditItem(
                     contractor_name=name,
                     division_csi=csi_code,
                     status=AuditStatus.RED,
                     code=AuditCode.EXPLICIT_EXCLUSION,
+                    view="both",
                     message=(
-                        "Explicitly excluded — a plug number must be entered before "
-                        "using this bid in a total comparison."
+                        f"Division explicitly excluded by the bidder — shown "
+                        f"red 'Excluded' on the leveled sheet (R28: red until "
+                        f"user-approved). Estimated cost impact: {impact}"
                     ),
-                    value="EXCL",
+                    value="Excluded",
                 ))
 
-            else:
-                # Division is priced
-                if subtotal_state == CellState.AMOUNT and subtotal_amount:
-                    priced_divisions.add(csi_code)
+            # ENC-6 (3): fully by-owner division → ONE division-level YELLOW
+            # row carrying the VERBATIM token; it REPLACES the per-line rows
+            # for this division (dedup below).
+            elif kind == "by_owner":
+                token = falke_rules.by_owner_token(bid, csi_code)
+                items.append(AuditItem(
+                    contractor_name=name,
+                    division_csi=csi_code,
+                    status=AuditStatus.YELLOW,
+                    code=AuditCode.BY_OWNER_DEDUCTED,
+                    view="both",
+                    message=(
+                        f"Division classified '{token}' by the bidder "
+                        f"(approved classification, R3/R8) — excluded from "
+                        f"benchmarks. Verify the owner/other party actually "
+                        f"carries this scope."
+                    ),
+                    value=token,
+                ))
+
+            # Division is priced
+            if subtotal_state == CellState.AMOUNT and subtotal_amount:
+                priced_divisions.add(csi_code)
+
+            # W-D ruling 5.3: a net-negative division subtotal is preserved
+            # and rendered (accounting-negative) but is an ERROR until
+            # classified a deductive alternate / approved credit (R22 —
+            # no classification pathway exists yet, Q10). Fenced from every
+            # median by M-2 membership; the bidder's own arithmetic keeps it.
+            if (
+                subtotal_state == CellState.AMOUNT
+                and subtotal_amount is not None
+                and subtotal_amount < Decimal("0")
+            ):
+                items.append(AuditItem(
+                    contractor_name=name,
+                    division_csi=csi_code,
+                    status=AuditStatus.RED,
+                    code=AuditCode.NEGATIVE_UNCLASSIFIED,
+                    view="both",
+                    message=(
+                        f"Net negative division subtotal "
+                        f"({_fmt(subtotal_amount)}) — negative values are "
+                        f"errors unless marked as a deductive alternate or "
+                        f"approved credit (R22). Verify the credit's "
+                        f"classification before leveling."
+                    ),
+                    value=_fmt(subtotal_amount),
+                ))
 
             # Check 1: ARITHMETIC_DISCREPANCY / ARITHMETIC_VERIFIED
             # Only applicable to ITEMIZED / PARTIAL_ITEMIZED divisions
@@ -453,7 +548,15 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
                         ))
 
             # Check 6: LUMP_SUM_DIVISION
-            if div.cost_structure == CostStructure.LUMP_SUM:
+            # GOLD-DEV-7 noise fix rule (1) (Marvin ruling 2026-07-15, harness
+            # D1): fires only when the division actually carries a subtotal
+            # amount (a stated $0 counts — it is a submitted figure) OR line
+            # items. A zero-item, no-subtotal shell (an empty split secondary,
+            # a reclass-vacated division) has no "single total" to verify —
+            # it emits nothing.
+            if div.cost_structure == CostStructure.LUMP_SUM and (
+                subtotal_amount is not None or div.line_item_cells
+            ):
                 items.append(AuditItem(
                     contractor_name=name,
                     division_csi=csi_code,
@@ -528,8 +631,11 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
                         value=cell.display,
                     ))
 
-                # Check 5: BY_OWNER_DEDUCTED
-                if cell.state == CellState.BY_OWNER_OTHERS:
+                # Check 5: BY_OWNER_DEDUCTED — per-line rows remain ONLY for
+                # by-owner lines inside otherwise-priced divisions; a fully
+                # by-owner division's division-level row REPLACES them
+                # (ENC-6 rule 3 dedup).
+                if cell.state == CellState.BY_OWNER_OTHERS and kind != "by_owner":
                     items.append(AuditItem(
                         contractor_name=name,
                         division_csi=csi_code,
@@ -542,10 +648,63 @@ def audit_bids(bids: list[NormalizedBid]) -> list[AuditItem]:
                         value="BY OTHERS",
                     ))
 
+                # ENC-6 (2): EXCLUDED line inside an otherwise-priced division
+                # → one RED row per excluded line. Dedup: a fully-excluded
+                # division emits ONE division-level row instead (above).
+                if cell.state == CellState.EXCLUDED and kind != "excluded":
+                    items.append(AuditItem(
+                        contractor_name=name,
+                        division_csi=csi_code,
+                        line_item_desc=desc,
+                        status=AuditStatus.RED,
+                        code=AuditCode.EXPLICIT_EXCLUSION,
+                        view="both",
+                        message=(
+                            "Line item explicitly excluded within an "
+                            "otherwise-priced division — confirm the division "
+                            "subtotal excludes it and price the gap before "
+                            "comparison."
+                        ),
+                        value="Excluded",
+                    ))
+
         # -------------------------------------------------------------------
         # Per-bid footer checks
         # -------------------------------------------------------------------
         footer = bid.footer
+
+        # ENC-3 (S2-1, W-D): CCS composition check — Σ displayed division
+        # subtotals vs the bidder's STATED Construction Cost Subtotal at the
+        # Falke tolerance max($5, 0.5%). The writer paints the same failure
+        # RED on the leveled CCS cell ([FALKE R21] comment); this row is the
+        # register anchor the REM-2 on-cell disclosure points at.
+        cs_cell = footer.construction_subtotal
+        stated_ccs = (
+            float(cs_cell.amount)
+            if (cs_cell.state == CellState.AMOUNT and cs_cell.amount is not None)
+            else None
+        )
+        comp_fail = falke_rules.composition_check(bid, CANONICAL_20, stated_ccs)
+        if comp_fail is not None:
+            displayed_sum, comp_delta = comp_fail
+            delta_dec = Decimal(str(comp_delta))
+            items.append(AuditItem(
+                contractor_name=name,
+                status=AuditStatus.RED,
+                code=AuditCode.SUBTOTAL_COMPOSITION_DISCREPANCY,
+                view="leveled",
+                message=(
+                    f"Stated Construction Cost Subtotal "
+                    f"({_fmt(Decimal(str(stated_ccs)))}) does not compose from "
+                    f"the displayed division subtotals "
+                    f"(sum {_fmt(Decimal(str(displayed_sum)))}) — delta "
+                    f"{_fmt(delta_dec)} exceeds max($5, 0.5%) (ENC-3, "
+                    f"R21-class). Dollars may be carried outside the division "
+                    f"grid — verify where before comparing this bidder's "
+                    f"totals."
+                ),
+                value=_fmt(delta_dec),
+            ))
 
         # Check 11: MISSING_GRAND_TOTAL
         if footer.grand_total.amount is None:

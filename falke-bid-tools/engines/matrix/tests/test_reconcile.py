@@ -196,6 +196,114 @@ def test_check2_footer_arithmetic_break_fires(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# CHECK 2 — BIDDER-ERROR BRANCH (GOLD-DEV-6, Marvin ruling (1); Floyd W2-1/2)
+# ---------------------------------------------------------------------------
+
+def _bond_on_top_field():
+    """One bidder whose stated GT EXCLUDES its bond (the recurring bond-on-top
+    presentation): components sum 489,600 vs stated 480,000."""
+    a = _doc("Bondtop Builders", [
+        _div("DIV 03 00 00", "Concrete", Decimal("480000")),
+    ], _footer(Decimal("480000"), None, None, None, Decimal("480000"),
+               bond=Decimal("9600")))
+    return compute_cross_bid_stats([normalize_bid(a)])
+
+
+def test_check2_faithful_bidder_footer_error_does_not_quarantine(tmp_path):
+    """A faithfully-written bidder footer inconsistency must NOT fire check 2:
+    the written arith_delta equals the bidder's OWN footer delta (computed
+    from the rendered composition — grand_total_component_sum vs stated GT),
+    so the pre-write FOOTER_DISCREPANCY RED + R21 red tell the story instead
+    of a false tool-defect quarantine."""
+    bids = _bond_on_top_field()
+    out, audit_items = _write(tmp_path, bids)
+    # The bidder-error story exists pre-write, in the right vocabulary.
+    assert any(i.code == AuditCode.FOOTER_DISCREPANCY for i in audit_items)
+    failures = reconcile_written_matrix(out, bids, len(audit_items))
+    assert failures == [], (
+        "bond-on-top must no longer quarantine (GOLD-DEV-6); got: "
+        + "; ".join(f.message for f in failures)
+    )
+
+
+def test_check2_real_write_corruption_still_fires_on_bidder_error_bid(tmp_path):
+    """The suppression is delta-MATCHED, not blanket: a genuine write
+    corruption on the same bond-on-top bidder moves arith_delta away from the
+    bidder's own footer delta and check 2 fires exactly as before."""
+    bids = _bond_on_top_field()
+    out, audit_items = _write(tmp_path, bids)
+
+    wb = openpyxl.load_workbook(out)
+    ws = wb["Bid_Form"]
+    ccs_row = _find_footer_row(ws, "CONSTRUCTION_SUBTOTAL")
+    # Inflate the written construction subtotal by 50k WITHOUT touching the
+    # GT: arith_delta becomes 59,600 vs the bidder's own 9,600.
+    ws.cell(row=ccs_row, column=_col_start(0)).value = 530000.0
+    wb.save(out)
+
+    failures = reconcile_written_matrix(out, bids, len(audit_items))
+    assert any("Footer arithmetic FAILED" in f.message for f in failures), (
+        "the bidder-error branch must not blind check 2 to a REAL write defect"
+    )
+    assert all(f.code == AuditCode.POST_WRITE_TIEOUT_FAILURE for f in failures)
+
+
+# ---------------------------------------------------------------------------
+# QUARANTINE MARK — composes, never overwrites (GOLD-DEV-6 ruling (3) / D2)
+# ---------------------------------------------------------------------------
+
+def test_mark_cell_composes_prior_comment_and_keeps_fill_precedence():
+    """_mark_cell must PREPEND the quarantine text above an existing comment
+    (separator '--- prior flag on this cell ---') and take the fill visually
+    (Quarantine > Falke Red) — a tool defect on an already-painted cell never
+    erases the bid-level story (e.g. an R21 red)."""
+    from openpyxl import Workbook
+    from openpyxl.comments import Comment
+    from openpyxl.styles import PatternFill
+
+    from src.write_matrix import RED_FILL, _mark_cell
+
+    wb = Workbook()
+    ws = wb.active
+    cell = ws.cell(row=2, column=2)
+    cell.fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000",
+                            fill_type="solid")
+    cell.comment = Comment("Please correct — R21 grand total mismatch.",
+                           "FALKE")
+
+    _mark_cell(ws, 2, 2, "$1", "$480,000", "$479,999", "Bondtop Builders")
+
+    text = cell.comment.text
+    # W-D speaker tags: the quarantine text leads with its [QUARANTINE] tag
+    # and still PREPENDS above the prior story (compose order: [QUARANTINE]
+    # first, then the prior [FALKE]/[ARA] comment below the separator).
+    assert text.startswith(
+        "[QUARANTINE] ⚠ does not reconcile to source — verify")
+    assert "--- prior flag on this cell ---" in text
+    assert "R21 grand total mismatch" in text, "prior story must survive"
+    assert text.index("does not reconcile") < text.index("R21"), (
+        "quarantine text must PREPEND above the prior comment"
+    )
+    assert cell.fill.start_color.rgb == RED_FILL.start_color.rgb, (
+        "quarantine fill wins visually (established precedence)"
+    )
+
+
+def test_mark_cell_plain_when_no_prior_comment():
+    """No prior comment → no separator, just the quarantine text."""
+    from openpyxl import Workbook
+
+    from src.write_matrix import _mark_cell
+
+    wb = Workbook()
+    ws = wb.active
+    _mark_cell(ws, 3, 3, "$1", "$100", "$99", "Apex Restoration")
+    text = ws.cell(row=3, column=3).comment.text
+    assert "does not reconcile to source — verify" in text
+    assert "--- prior flag on this cell ---" not in text
+
+
+# ---------------------------------------------------------------------------
 # CHECK 2 (missing-row) — a dropped footer-component label is a STRUCTURAL
 # quarantine failure: delivered with the footer FLAGGED, pipeline exits 3
 # ---------------------------------------------------------------------------
@@ -343,8 +451,10 @@ def test_check4_dropped_audit_row_fires(tmp_path):
 
     wb = openpyxl.load_workbook(out)
     ws = wb["AUDIT"]
-    # Delete the first data row (row 5) — simulates truncation/overflow loss.
-    ws.delete_rows(5, 1)
+    # Delete the first DATA row (label-anchored below the header — the W-D
+    # key block sits at the top) — simulates truncation/overflow loss.
+    from src.write_matrix import find_audit_header_row
+    ws.delete_rows(find_audit_header_row(ws) + 1, 1)
     wb.save(out)
 
     failures = reconcile_written_matrix(out, bids, len(audit_items))

@@ -62,28 +62,90 @@ def _scaffold_with_overlay(tmp_path, overlay_text):
 
 
 # ---------------------------------------------------------------------------
-# Shipped file is a PUBLIC-SAFE SCAFFOLD: schema-valid + inert (spec §1.2/§1.4)
+# Shipped file — ONE test file serves BOTH build heads (release-process R-5):
+#   * PRIVATE canonical: known_firms.yaml carries the REAL recurring-firm
+#     library + an INERT schema example -> the private-build tests run.
+#   * PUBLIC artifact (produced from canonical by the scripted scrub, which
+#     swaps ONLY known_firms.yaml for the scaffold): the scaffold-build test
+#     runs instead. No test file is ever edited by the release scrub.
+# The section self-selects on whether the shipped file carries active firms.
 # ---------------------------------------------------------------------------
 
-def test_shipped_scaffold_loads_validates_and_is_inert():
+_SHIPPED_HAS_ACTIVE_FIRMS = any(
+    not f.example for f in load_known_firms(DEFAULT_KNOWN_FIRMS_PATH).firms)
+
+
+def _has_reclass(firm, frm, to, kws):
+    kws = {k.lower() for k in kws}
+    return any(
+        r.from_division == frm and r.to_division == to
+        and kws <= {k.lower() for k in r.when_description_contains_all}
+        for r in firm.reclassifications
+    )
+
+
+@pytest.mark.skipif(not _SHIPPED_HAS_ACTIVE_FIRMS,
+                    reason="shipped file is the public scaffold (release-scrub "
+                           "artifact) — private-build assertions do not apply")
+def test_shipped_known_firms_carries_active_real_firms():
+    """The private-repo base ships ACTIVE recurring firms (not just the inert
+    example), so they match directly with NO overlay. Verified structurally +
+    behaviorally — the firm NAMES are asserted only via the config's own match
+    terms, never hard-coded here (real names live solely in known_firms.yaml)."""
     cfg = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
-    ids = {f.firm_id for f in cfg.firms}
-    assert ids == {"example_restoration"}          # zero real names
+    active = [f for f in cfg.firms if not f.example]
+    assert active, "base file must ship at least one active (non-example) firm"
+
+    # a firm that reclassifies the two known destructive moves
+    # (dumpster DIV 11 -> DIV 01 AND flooring-labor DIV 13 -> DIV 09)
+    assert any(
+        _has_reclass(f, "DIV 11 00 00", "DIV 01 00 00", ["dumpster"])
+        and _has_reclass(f, "DIV 13 00 00", "DIV 09 00 00", ["flooring", "labor"])
+        for f in active
+    ), "base must carry the two-move destructive-reclass firm"
+
+    # a firm selecting the legacy csi_1995_2digit code-format profile
+    assert any(f.code_format_profile == "csi_1995_2digit" for f in active), (
+        "base must carry the legacy-code-format firm")
+
+    # each active firm matches a bid carrying its OWN (config-defined) match term
+    for f in active:
+        assert cfg.match(f.match[0] + " Construction LLC").firm is not None
+
+
+def test_shipped_example_firm_is_inert():
+    """The inert schema-example entry is schema-validated but filtered from
+    matching, so it can never fire against a real bid (spec §1.4)."""
+    cfg = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
     ex = next(f for f in cfg.firms if f.firm_id == "example_restoration")
     assert ex.example is True
     assert ex.code_format_profile == "csi_1995_2digit"
     assert [r.rule_id for r in ex.reclassifications] == ["EXAMPLE_DUMPSTER"]
-    # INERT: the example firm is schema-validated but filtered from matching, so
-    # it can never fire against a real bid (spec §1.4).
     assert cfg.match("examplecontractor").firm is None
     assert cfg.match("examplecontractor").matched_firm_ids == []
 
 
-def test_absent_overlay_is_the_safe_default():
-    """No local overlay next to the shipped scaffold → merged set is scaffold
-    only and the match set is empty (safe-absent, spec §4)."""
+@pytest.mark.skipif(_SHIPPED_HAS_ACTIVE_FIRMS,
+                    reason="shipped file is the private real-firm library — "
+                           "scaffold-build assertions do not apply")
+def test_shipped_scaffold_is_sole_inert_example():
+    """PUBLIC build only: the scrubbed shipped file is a public-safe scaffold —
+    its sole firm is the inert schema example (zero real names) and the match
+    set is empty (safe-absent, spec §1.2/§1.4/§4)."""
     cfg = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
     assert {f.firm_id for f in cfg.firms} == {"example_restoration"}
+    assert cfg.match("Any Contractor LLC").firm is None
+
+
+def test_absent_overlay_loads_base_library():
+    """No local overlay next to the base file → the merged set is just the base
+    library (nothing dropped, nothing invented); absent overlay is the normal,
+    safe case on BOTH build heads. A contractor matching no configured term
+    matches nothing."""
+    cfg = load_known_firms(DEFAULT_KNOWN_FIRMS_PATH)
+    assert "example_restoration" in {f.firm_id for f in cfg.firms}
+    if _SHIPPED_HAS_ACTIVE_FIRMS:  # private base: active firms survive the merge
+        assert any(not f.example for f in cfg.firms)
     assert cfg.match("Any Restoration LLC").firm is None
 
 

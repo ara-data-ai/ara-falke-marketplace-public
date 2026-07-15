@@ -1,0 +1,20 @@
+# GOLDEN-SET v1 synthetic known-firms OVERLAY (PUBLIC-SAFE — fictional firm).
+# ---------------------------------------------------------------------------
+# The gold run must exercise the known-firm reclass path WITHOUT any real firm
+# name, on BOTH the private and public trees. The harness installs this file as
+#   engines/matrix/config/known_firms.local.yaml
+# for the duration of the gold run (backing up and restoring any pre-existing
+# local overlay), then removes it. The filename is gitignored at the plugin
+# level, so an accidentally left-behind copy still cannot ship.
+#
+# Determinism rule: the gold run must execute with EXACTLY this overlay active
+# (a real private overlay left in place could, in principle, add match terms;
+# swap, don't merge).
+firms:
+  - firm_id: gold_beacon_shoreline
+    match: ["beacon shoreline"]        # matches only the synthetic gold bidder
+    reclassifications:
+      - rule_id: GOLD_BEACON_DUMPSTER
+        from: "DIV 11 00 00"
+        to:   "DIV 01 00 00"
+        when_description_contains_all: ["dumpster"]

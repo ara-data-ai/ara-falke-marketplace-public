@@ -1,0 +1,77 @@
+{
+  "contractor_name": "Alpha Restoration Group LLC",
+  "project_name": "Harbor Point Tower II Condominium",
+  "project_address": "4200 Harbor Point Drive, Clearwater, FL 33767",
+  "bid_date": "2026-06-01",
+  "total_gsf": 100000,
+  "form_type": "FALKE_STANDARD",
+  "bid_document_input_type": "DIGITAL_NATIVE",
+  "extraction_confidence": "HIGH",
+  "extraction_warnings": [],
+  "divisions": [
+    {
+      "csi_code": "DIV 01 00 00",
+      "division_name": "General Requirements",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "100000.00"
+    },
+    {
+      "csi_code": "DIV 02 00 00",
+      "division_name": "Existing Conditions",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "100000.00"
+    },
+    {
+      "csi_code": "DIV 03 00 00",
+      "division_name": "Concrete",
+      "cost_structure": "ITEMIZED",
+      "line_items": [
+        {"description": "Balcony slab edge spall repair", "amount": "300000.00"},
+        {"description": "Post-tension tendon repair & restressing", "amount": "150000.00"},
+        {"description": "Structural column & beam restoration", "amount": "50000.00"}
+      ],
+      "division_subtotal": "500000.00"
+    },
+    {
+      "csi_code": "DIV 07 00 00",
+      "division_name": "Thermal & Moisture Protection",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "400000.00"
+    },
+    {
+      "csi_code": "DIV 09 00 00",
+      "division_name": "Finishes",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "200000.00"
+    },
+    {
+      "csi_code": "DIV 22 00 00",
+      "division_name": "Plumbing",
+      "cost_structure": "LUMP_SUM",
+      "line_items": [],
+      "division_subtotal": "150000.00"
+    }
+  ],
+  "footer": {
+    "construction_cost_subtotal": "1450000.00",
+    "general_liability_insurance": "15000.00",
+    "builders_risk_insurance": "10000.00",
+    "gc_fee": "87000.00",
+    "overhead_and_profit": null,
+    "other_fees_subtotal": null,
+    "bond": "20000.00",
+    "grand_total": "1582000.00",
+    "alternates": [
+      {"description": "ADD ALTERNATE 1 — Balcony railing replacement (all units)", "amount": "95000.00"}
+    ],
+    "grand_total_confidence": "HIGH",
+    "confidence_flags": []
+  },
+  "qualifications": {
+    "qualifications": "Bid valid 90 days. Work performed during normal business hours; owner to provide staging area and water/power at no cost."
+  }
+}
