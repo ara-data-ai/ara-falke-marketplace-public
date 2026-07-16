@@ -13,7 +13,7 @@ brief calls out, with synthetic matrices that differ from the validation set in 
   * a bidder block with EXTRA / MISSING line items vs its peers.
 
 For each it asserts block detection, grand-total detection, $/SF (on the SUPPLIED
-basis), tiering vs the SUPPLIED band, contiguous ranking over ALL bidders, and
+basis), tiering vs the SUPPLIED band, ALL bidders threaded through, and
 that the deterministic self-audit RUNS to a verdict — all WITHOUT any hardcoded
 bidder count or division set. The engine measures count/width/stride and detects
 divisions by the '...SUBTOTAL' predicate, so nothing here is single-project-shaped.
@@ -100,7 +100,7 @@ def _eighteen_labels(n: int) -> List[str]:
 
 
 def _assert_field_correct(xlsx: str, bidders, *, n_divs: int):
-    """Shared assertions: detection, $/SF, tiers, ranking, audit-runs — all
+    """Shared assertions: detection, $/SF, tiers, field completeness, audit-runs — all
     data-driven, NO hardcoded counts."""
     cfg = _cfg()
     parser = MatrixParser(cfg.block("matrix"))
@@ -126,10 +126,17 @@ def _assert_field_correct(xlsx: str, bidders, *, n_divs: int):
     # every bidder gets a tier from the band rule
     valid = {"TOP", "MID", "DEFENSIVE", "PREMIUM", "RISK"}
     assert all(out[n]["tier"] in valid for n, _ in bidders)
-    # ranking is contiguous 1..N over the WHOLE field
-    ranks = sorted(b["rank"] for b in result["bidders"])
-    assert ranks == list(range(1, len(bidders) + 1))
+    # THE WHOLE FIELD threads through — which is what this file is actually
+    # about (variable field SIZE), independent of ranking. These runs supply no
+    # scoring xlsx, so coverage is partial and, under Marvin's P1-2 ruling, the
+    # field is listed alphabetically and carries NO rank: the absence is the
+    # contract. A contiguous-1..N assertion here would be pinning the ranking
+    # behaviour the ruling removed.
+    assert result["full_coverage"] is False
+    assert all("rank" not in b for b in result["bidders"])
     assert len(result["ranking"]) == len(bidders)
+    listed = [r["name"] for r in result["ranking"]]
+    assert listed == sorted(listed, key=str.lower)
     # render context threads the WHOLE field through (one Section-B row/bidder)
     ctx = build_context(result, cfg)
     assert len(ctx["bid_rows"]) == len(bidders)

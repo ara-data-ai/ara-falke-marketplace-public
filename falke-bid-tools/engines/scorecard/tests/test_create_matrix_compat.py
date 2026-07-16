@@ -193,6 +193,10 @@ def test_pipeline_end_to_end_on_create_matrix_output():
     assert by_name["Alpine Restoration Group"]["per_sf"] == 110
     assert round(1_100_000 / FIXTURE_GSF) != 110
 
-    ranks = sorted(b["rank"] for b in result["bidders"])
-    assert ranks == [1, 2, 3, 4]
+    # These runs supply no scoring xlsx, so coverage is partial and — under
+    # Marvin's P1-2 ruling — the field carries NO rank and is listed
+    # alphabetically. The whole field still threads through, which is what
+    # these tests are actually about.
+    assert result["full_coverage"] is False
+    assert all("rank" not in b for b in result["bidders"])
     assert len(result["ranking"]) == 4

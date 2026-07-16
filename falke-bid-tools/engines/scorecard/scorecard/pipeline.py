@@ -28,6 +28,7 @@ from .narratives import (FRAMEWORK_ROWS, SHEET_DISCLOSURES, TIER_QUICK_READ,
                          merge_qualitative_notes, section_c_interpretation)
 from .scoring import (CATEGORY_DISPLAY, CATEGORY_ORDER, apply_overrides,
                       build_bidder_scores)
+from .exit_codes import coverage_watermark
 from .scoring_inputs import build_scores_from_inputs
 
 
@@ -283,14 +284,21 @@ def run_scorecard(
         # can re-order the award ranking is scoring, not presentation.)
         wa = scores.weighted_average_x10(weights_in_use)
         wavg = wa["wavg"]
+        # ---- The Overall is WITHHELD at partial coverage, not computed-and-
+        # marked (Marvin P1-2 §3.3.1). The card used to print
+        # "63* (prov., 60% coverage)". That number is 63-out-of-60-available and
+        # it reads as a D — systematically misleading DOWNWARD — and two of them
+        # side by side in a column ARE a ranking whether or not the rows are
+        # sorted. The composite's whole meaning is *the framework applied to a
+        # complete record*; applied to an incomplete record it is not a weaker
+        # answer, it is a different question.
+        # Computed per bidder here; WITHHELD BELOW on a run-wide basis once
+        # every bidder's coverage is known (see the withholding block after the
+        # loop). Withholding per bidder would leave a fully-scored bidder's
+        # Overall printed beside a "Pending" one — and two Overalls side by side
+        # in a column ARE a ranking, whether or not the rows are sorted.
         overall_numeric = round(wavg, 1) if wavg is not None else None
-        if wavg is None:
-            overall_display = "—*"
-        elif wa["coverage"] < 0.999:
-            overall_display = (f"{wavg:.0f}* (prov., "
-                               f"{wa['coverage']*100:.0f}% coverage)")
-        else:
-            overall_display = f"{wavg:.0f}"
+        overall_display = f"{wavg:.0f}" if wavg is not None else "—"
 
         quick_read = TIER_QUICK_READ[m.tier]
         bidder = {
@@ -328,32 +336,86 @@ def run_scorecard(
             "tier": m.tier,
         })
 
-    # ---- 5. RANKING (Marvin §9) ----
-    ranked = rank_bidders(rank_input)
-    rank_lookup = {r["name"]: i + 1 for i, r in enumerate(ranked)}
-    for b in bidders_out:
-        b["rank"] = rank_lookup[b["name"]]
+    # ---- 5. RANKING — or its deliberate ABSENCE (Marvin P1-2 §3.3) ---------
+    # A PROVISIONAL CARD DOES NOT RANK. rank_bidders is not called, no bidder
+    # carries a `rank` key, and the rank column is ABSENT — not blank, absent.
+    #
+    # Why the absence and not a caveat: the safety of a provisional card cannot
+    # come from a disclosure, because a disclosure does not survive a phone
+    # photo of the ranking table. A claim that is absent cannot be cropped back
+    # into existence. Subtract the claim; do not caveat it.
+    #
+    # Why no coverage floor short of 100%: at RAGGED coverage the engine does
+    # not rescale (by design — that is what makes blanks self-penalizing), so a
+    # bidder with three blanks is docked the full weight of what nobody has
+    # gotten around to asking about yet. Their order is an artifact of SCORING
+    # PROGRESS, not merit — it ranks the evaluator's calendar. And a "rank when
+    # coverage is uniform" rule would be worse than useless: it teaches the
+    # operator that CLEARING a category for everyone produces the ranking, i.e.
+    # manufacturing a rank by deleting evidence. 100% is the only state in which
+    # the ranking is both computed on an identical instrument for every bidder
+    # AND not manipulable by omission. That is a property, not a threshold.
+    #
+    # What the naive restoration would have shipped, had we just stopped
+    # rejecting blanks: rank_bidders' keys collapse at zero coverage
+    # (`-(None or 0)` → 0 for everyone), leaving only per_sf_over_band — so the
+    # card would rank the field on price and matrix order, with no qualitative
+    # content in it whatsoever, and the summary would name a winner.
+    full_coverage = all(b["overall"]["coverage"] >= 0.999 for b in bidders_out)
+
+    # ---- WITHHOLD THE OVERALL, RUN-WIDE (Marvin P1-2 §3.3.1) --------------
+    # Not per bidder. If ANY bidder is incomplete the CARD is provisional, and a
+    # card that printed 78 next to "Pending" would be making the comparison it
+    # just refused to make — the fully-scored bidder would read as the leader by
+    # default, which is the ranking claim smuggled back in as a column.
+    if not full_coverage:
+        n_total = len(categories_meta)
+        for b in bidders_out:
+            n_scored = sum(1 for c in categories_meta
+                           if (b.get("scores") or {}).get(c["key"]) is not None)
+            n_out = n_total - n_scored
+            b["overall"]["numeric"] = None
+            b["overall"]["weighted_average"] = None
+            b["overall"]["display"] = (
+                f"Pending — {n_out} of {n_total} "
+                f"categor{'y' if n_out == 1 else 'ies'} outstanding"
+                if n_out else "Pending — evaluation incomplete")
+
+    if full_coverage:
+        ranked = rank_bidders(rank_input)
+        rank_lookup = {r["name"]: i + 1 for i, r in enumerate(ranked)}
+        for b in bidders_out:
+            b["rank"] = rank_lookup[b["name"]]
+        ordered_names = [r["name"] for r in ranked]
+    else:
+        # Alphabetical is the ONLY order that is self-evidently not a claim —
+        # matrix order invites the top row to be read as the leader, and price
+        # order re-asserts exactly the ranking we just withheld. The card says
+        # so out loud (render.listing_note); saying so is half the control.
+        bidders_out.sort(key=lambda b: b["name"].lower())
+        rank_lookup = {}
+        ordered_names = [b["name"] for b in bidders_out]
 
     ranking_out = []
-    for r in ranked:
-        b = next(bb for bb in bidders_out if bb["name"] == r["name"])
-        qn = (qualitative_notes or {}).get(r["name"])
+    for name in ordered_names:
+        b = next(bb for bb in bidders_out if bb["name"] == name)
+        qn = (qualitative_notes or {}).get(name)
         bullets = merge_qualitative_notes(b["tier"], qn)
         # surface completeness/duplicate flags as risk bullets
         for f in b["flags"]:
             bullets["risks"].append(f)
-        ranking_out.append({
-            "name": r["name"], "rank": rank_lookup[r["name"]], "tier": b["tier"],
-            "strengths": bullets["strengths"], "risks": bullets["risks"],
-        })
+        entry = {"name": name, "tier": b["tier"],
+                 "strengths": bullets["strengths"], "risks": bullets["risks"]}
+        if full_coverage:
+            entry["rank"] = rank_lookup[name]
+        ranking_out.append(entry)
 
     # ---- 6. coverage summary + provenance ----
-    full_coverage = all(b["overall"]["coverage"] >= 0.999 for b in bidders_out)
     if full_coverage:
         overall_label = "Overall = honest weighted average (deterministic)."
     else:
-        overall_label = ("Overall = honest weighted average (PROVISIONAL — "
-                         "qualitative coverage below 100%).")
+        overall_label = ("Overall withheld — the qualitative evaluation is "
+                         "incomplete, so the field is not ranked.")
 
     # ---- baseline (Section A) — PARAMETER, passed through ----
     baseline = _build_baseline_block(cfg, baseline_lines)
@@ -387,11 +449,58 @@ def run_scorecard(
         "categories": categories_meta,
         "overall_label": overall_label,
         "full_coverage": full_coverage,
+        # the COVERAGE half of the PRELIMINARY mark, known the moment the
+        # pipeline finishes. The CLI composes the audit half onto it once the
+        # verdict exists; C12(d) checks this. A direct programmatic caller gets
+        # the same honest mark the CLI does.
+        "watermark": coverage_watermark(full_coverage=full_coverage),
+        # The coverage worklist (Marvin §2.3) — what is left to do. Today the
+        # operator learns what is outstanding by squinting at the grid; this is
+        # what turns the provisional card into the artifact a precon lead
+        # actually renders one FOR.
+        "coverage": _coverage_summary(bidders_out, categories_meta),
         "fingerprints": fingerprints,
         "parsed": parsed,
         "log": log,
     }
     return result
+
+
+def _coverage_summary(bidders_out: List[Dict], categories_meta: List[Dict]) -> Dict:
+    """Per-bidder and field-level scoring progress (Marvin P1-2 §2.3).
+
+    Field-level coverage is expressed in FRAMEWORK WEIGHT, not in cell count:
+    "34 of 64 category scores entered (53% of framework weight)". Cells and
+    weight are different questions — eight blank 5%-categories and one blank
+    25%-category are the same cell count and nowhere near the same evaluation.
+    The per-bidder coverage figure is the same one C12 re-derives.
+    """
+    n_total = len(categories_meta)
+    per_bidder = []
+    cells_scored = 0
+    for b in bidders_out:
+        scored = sum(1 for c in categories_meta
+                     if (b.get("scores") or {}).get(c["key"]) is not None)
+        cells_scored += scored
+        per_bidder.append({
+            "name": b["name"],
+            "scored": scored,
+            "total": n_total,
+            "outstanding": n_total - scored,
+            "coverage_pct": round(b["overall"]["coverage"] * 100),
+        })
+    cells_total = n_total * len(bidders_out)
+    weight_pct = (round(
+        sum(b["overall"]["coverage"] for b in bidders_out)
+        / len(bidders_out) * 100) if bidders_out else 0)
+    return {
+        "per_bidder": per_bidder,
+        "cells_scored": cells_scored,
+        "cells_total": cells_total,
+        "weight_pct": weight_pct,
+        "headline": (f"{cells_scored} of {cells_total} category scores entered "
+                     f"({weight_pct}% of framework weight)."),
+    }
 
 
 def preview_baseline(
@@ -533,6 +642,7 @@ def audit_run(
     out_dir: str,
     *,
     aliases: Optional[Dict[str, str]] = None,
+    summary_context: Optional[Dict] = None,
 ):
     """Run the deterministic self-audit AFTER artifacts are generated, and write
     audit_report.md + audit.json to out_dir (Marvin's rubric §4).
@@ -547,7 +657,8 @@ def audit_run(
     from .audit import write_audit_artifacts
 
     parsed = result["parsed"]
-    ar = _audit(parsed, cfg, result, aliases=aliases)
+    ar = _audit(parsed, cfg, result, aliases=aliases,
+                summary_context=summary_context)
     paths = write_audit_artifacts(ar, parsed, cfg, result, out_dir)
     return ar, paths
 
@@ -558,6 +669,7 @@ def render_summary(
     *,
     engine: str = "chromium",
     html_only: bool = False,
+    watermark: Optional[List[Dict]] = None,
 ) -> Dict[str, str]:
     """Render the plain-English Scorecard Summary companion alongside the card.
 
@@ -578,10 +690,15 @@ def render_summary(
                          write_html)
     from .summary import build_summary_context
 
-    ctx = build_summary_context(result)
+    ctx = build_summary_context(result, watermark=watermark)
     html = render_template(SUMMARY_TEMPLATE_FILE, ctx)
     _os.makedirs(out_dir, exist_ok=True)
-    base = _os.path.join(out_dir, "scorecard_summary")
+    # the summary travels too, and a clean-named summary beside a PRELIMINARY
+    # card is a packet whose two documents disagree (Marvin §2.3, "and the
+    # summary likewise").
+    base = _os.path.join(
+        out_dir,
+        "scorecard_summary-PRELIMINARY" if watermark else "scorecard_summary")
     paths: Dict[str, str] = {"summary_html": write_html(html, base + ".html")}
     if not html_only:
         # Surface a render failure to the caller (same contract as the card):

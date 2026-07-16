@@ -61,6 +61,20 @@ MODE_LEGACY = "legacy"
 # engine must revisit this range in the same commit.
 STAMP_PRODUCER_PROP = "falke_bid_tools.producer"
 STAMP_FORMAT_PROP = "falke_bid_tools.format_version"
+# Run + project identity (P1-4). Additive properties: a workbook that predates
+# them reads back None for each and takes the legacy/unstamped path — which is
+# why adding them is NOT a format change and does not move SUPPORTED_PRODUCER.
+#   run_id       — binds a scorecard run pack to the matrix run that emitted it
+#                  (Marvin §8.3). EVIDENCE, not a gate; the roster is the gate.
+#   project_*    — the ONLY re-derivable source of matrix project identity for
+#                  the pack's I3 check. The sheets cannot supply it: the leveled
+#                  default sheet carries the project NAME only (row 6, per
+#                  bidder) and never the ADDRESS, and row 1 is overwritten by the
+#                  Stage-6b quarantine banner.
+STAMP_RUN_ID_PROP = "falke_bid_tools.run_id"
+STAMP_PROJECT_NAME_PROP = "falke_bid_tools.project_name"
+STAMP_PROJECT_ADDRESS_PROP = "falke_bid_tools.project_address"
+STAMP_SF_BASIS_LABEL_PROP = "falke_bid_tools.sf_basis_label"
 PRODUCER_KEY = "falke-bid-tools/matrix"
 # supported format-version range: >= (0,3) and < (0,5). v0.3-era workbooks
 # (and the untracked v0.3 fixtures/eval fixtures) predate the stamp entirely —
@@ -129,8 +143,17 @@ def resolve_sheet(sheetnames: List[str],
 def read_producer_stamp(wb) -> Optional[Dict[str, str]]:
     """Read the producer stamp (custom document properties) from a workbook.
 
-    Returns {'producer': ..., 'format_version': ...} or None when unstamped
-    (pre-v0.4.1 producer output, legacy single-sheet workbooks, hand-built files).
+    Returns a dict with 'producer' and 'format_version' — plus 'run_id',
+    'project_name', 'project_address' and 'sf_basis_label' when the producer
+    wrote them — or None when unstamped (pre-v0.4.1 producer output, legacy
+    single-sheet workbooks, hand-built files).
+
+    The identity keys are OMITTED rather than None-filled when absent, so a
+    caller can tell "the producer said this is empty" from "this producer never
+    said". Every consumer of the absent case (run_pack's I7 tier, _assert_identity)
+    treats silence as "unknown", never as a mismatch — inventing a contradiction
+    out of a missing field is F1's error, and it cost us a P0 to learn it once.
+
     Readable in read_only mode (verified openpyxl >= 3.1).
     """
     try:
@@ -141,7 +164,15 @@ def read_producer_stamp(wb) -> Optional[Dict[str, str]]:
     version = props.get(STAMP_FORMAT_PROP)
     if producer is None and version is None:
         return None
-    return {"producer": producer, "format_version": version}
+    stamp = {"producer": producer, "format_version": version}
+    for key, prop in (("run_id", STAMP_RUN_ID_PROP),
+                      ("project_name", STAMP_PROJECT_NAME_PROP),
+                      ("project_address", STAMP_PROJECT_ADDRESS_PROP),
+                      ("sf_basis_label", STAMP_SF_BASIS_LABEL_PROP)):
+        value = props.get(prop)
+        if value is not None:
+            stamp[key] = str(value)
+    return stamp
 
 
 def _parse_version(v: str) -> Tuple[int, int]:

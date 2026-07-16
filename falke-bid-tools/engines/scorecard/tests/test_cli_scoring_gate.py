@@ -122,7 +122,12 @@ def _render_argv(matrix, baseline, out):
 
 
 def _no_artifacts(out_dir):
-    for fn in ("scorecard.pdf", "scorecard.html", "scorecard_run.json"):
+    """A gate stop writes NOTHING — under either name. P1-2 §2.3 gives a
+    non-deliverable artifact a distinct filename, so an absence assertion that
+    only knew the deliverable's name would pass while a PRELIMINARY card sat on
+    disk beside it."""
+    for fn in ("scorecard.pdf", "scorecard.html", "scorecard_run.json",
+               "scorecard-PRELIMINARY.pdf", "scorecard-PRELIMINARY.html"):
         assert not os.path.exists(os.path.join(out_dir, fn)), fn
 
 
@@ -249,7 +254,7 @@ def test_e2e_render_with_modified_framework_is_dynamic(tmp_path):
     rc = main(_render_argv(matrix, baseline, out) + [
         "--scoring-framework", fw, "--category-scores", cs])
     assert rc == 0
-    html_path = os.path.join(out, "scorecard.html")
+    html_path = os.path.join(out, "scorecard-PRELIMINARY.html")
     assert os.path.exists(html_path)
     with open(html_path, encoding="utf-8") as fh:
         html = fh.read()

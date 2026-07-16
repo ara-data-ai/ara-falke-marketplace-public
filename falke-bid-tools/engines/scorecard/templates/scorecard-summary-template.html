@@ -339,10 +339,64 @@ table.rank tbody tr.is-winner td { background: var(--green-tint); font-weight: 7
   border-top: 1px solid var(--rule);
   padding-top: 7px;
 }
+/* ---------------------------------------------------------------------------
+   PRELIMINARY WATERMARK — the SAME mechanism the card carries (P1-1).
+   The summary is a board-facing artifact in its own right and it travels on its
+   own; a card stamped PRELIMINARY beside a clean-looking summary is a packet
+   whose two documents disagree about whether it is deliverable. Same context
+   key, same reason list, same two layers (tiling diagonal = the control;
+   banner = support). The one explanation of the tiling mechanism lives in
+   scorecard-template.html's watermark-conditional style block — the block that
+   injects it. Read it there; it is not repeated here, and it should not be.
+--------------------------------------------------------------------------- */
+.prelim-banner {
+  background: #B3261E;
+  color: #FFFFFF;
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  page-break-inside: avoid;
+}
+.prelim-banner .prelim-title {
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.prelim-banner ul { margin: 0; padding-left: 16px; }
+.prelim-banner li { font-size: var(--fs-small); margin-bottom: 1px; }
+.prelim-banner li:last-child { margin-bottom: 0; }
+
 </style>
+
+{# See scorecard-template.html for why the mark rides on the root element and
+   not on a fixed-position node: fixed renders on page 1 only. #}
+{% if watermark %}
+<style>
+html {
+  background-image: url("{{ watermark_bg }}");
+  background-repeat: repeat;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+body { background: transparent; }
+</style>
+{% endif %}
 </head>
 
 <body>
+
+{% if watermark %}
+<div class="prelim-banner">
+  <div class="prelim-title">{{ watermark_headline }}</div>
+  <ul>
+    {% for r in watermark %}<li>{{ r.detail }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 <!-- ========================== HEADER BAND ================================= -->
 <!--
@@ -361,32 +415,47 @@ table.rank tbody tr.is-winner td { background: var(--green-tint); font-weight: 7
 <div class="doc">
 
 <!-- ================= RECOMMENDATION / WINNER (hero callout) =============== -->
+<!--
+  TWO DOCUMENT SHAPES, not one with a hedge (Marvin P1-2 §3.4). At partial
+  coverage this is a STATUS document: no winner, no rationale, no
+  recommendation eyebrow. A front-runner is a ranking claim, and softening the
+  sentence around it does not unmake it — that is F2's shape.
+-->
+{% if full_coverage %}
 <div class="callout">
   <p class="eyebrow">Recommendation</p>
   <div class="winner-name">{{ winner_name }}</div>
   <p class="winner-rationale">{{ winner_rationale }}</p>
 </div>
+{% else %}
+<div class="callout">
+  <p class="eyebrow">Status</p>
+  <div class="winner-name">{{ status_header }}</div>
+  <p class="winner-rationale">{{ coverage.headline }} The price picture below is complete; the qualitative evaluation is not, so this document does not rank the field or name a leader.</p>
+</div>
+{% endif %}
 
 <!-- ===================== RANKING AT A GLANCE (compact) ==================== -->
 <div class="section">
-  <h2 class="section-title">Ranking at a glance</h2>
+  <h2 class="section-title">{% if full_coverage %}Ranking at a glance{% else %}Bidders at a glance{% endif %}</h2>
+  {% if listing_note %}<p class="runners-up" style="margin:0 0 6px;font-weight:700;color:#B3261E;">{{ listing_note }}</p>{% endif %}
   <table class="rank">
     <colgroup>
-      <col style="width:12%"><col style="width:50%"><col style="width:23%"><col style="width:15%">
+      {% if full_coverage %}<col style="width:12%">{% endif %}<col style="width:50%"><col style="width:23%"><col style="width:15%">
     </colgroup>
     <thead>
       <tr>
-        <th class="rank-num">Rank</th>
+        {% if full_coverage %}<th class="rank-num">Rank</th>{% endif %}
         <th>Bidder</th>
         <th>Tier</th>
-        <th class="rank-overall">Overall /100</th>
+        <th class="rank-overall">{% if full_coverage %}Overall /100{% else %}Overall{% endif %}</th>
       </tr>
     </thead>
     <tbody>
       <!-- REPEAT:ranked_bidder -->
       {% for b in ranked_bidders %}
-      <tr{% if b.rank == 1 or b.rank == "1" %} class="is-winner"{% endif %}>
-        <td class="rank-num">{{ b.rank }}</td>
+      <tr{% if full_coverage and (b.rank == 1 or b.rank == "1") %} class="is-winner"{% endif %}>
+        {% if full_coverage %}<td class="rank-num">{{ b.rank }}</td>{% endif %}
         <td>{{ b.name }}</td>
         <td>{{ b.tier }}</td>
         <td class="rank-overall">{{ b.overall }}</td>
@@ -395,7 +464,7 @@ table.rank tbody tr.is-winner td { background: var(--green-tint); font-weight: 7
       <!-- /REPEAT:ranked_bidder -->
     </tbody>
   </table>
-  <p class="runners-up">{{ runners_up_note }}</p>
+  {% if runners_up_note %}<p class="runners-up">{{ runners_up_note }}</p>{% endif %}
 </div>
 
 <!-- ===================== HOW TO READ THIS (methodology) =================== -->

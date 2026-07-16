@@ -10,7 +10,15 @@ Determinism contract: NO LLM, NO network. Pure arithmetic, set logic, regex.
 Every check runs every time (failures do NOT short-circuit) so the report is
 always complete. Implements checks C1..C16 from the scorecard audit rubric,
 plus C17 (producer quarantine marker) and C18 (cross-sheet grand-total
-tie-out) from Marvin's P0-7 sheet ruling.
+tie-out) from Marvin's P0-7 sheet ruling, plus C19..C22 from his P1-4 run-pack
+ratification: C19 framework drift vs the declared basis (which folds in P2-4's
+orphaned framework-vs-canonical weights-drift check — it is free here and
+orphaned there), C20 the two-clock date coherence, C21 input-channel provenance,
+C22 run-pack binding provenance.
+
+C19-C22 are INFO no-ops when the run supplies individual input files rather than
+a pack: there is no declaration to judge, and a check that invents a finding out
+of an absent input is worse than no check.
 
 Severity -> verdict (rubric §2):
   - any BLOCKER fail              -> FAIL
@@ -215,8 +223,30 @@ def check_c4(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
 def check_c5(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
     bidders = pipeline_result["bidders"]
     n = len(bidders)
-    ranks = [b["rank"] for b in bidders]
     full_coverage = bool(pipeline_result.get("full_coverage", False))
+
+    # PARTIAL COVERAGE: there is no ranking, and THE ABSENCE IS THE CHECK
+    # (Marvin P1-2 §4.3). C5 used to carry a partial-coverage special case that
+    # accepted equal-Overall ties "at partial coverage"; that case is DELETED,
+    # because at partial coverage there is nothing to tie. This ruling removes a
+    # special case rather than adding one — which is a good sign about the
+    # ruling.
+    if not full_coverage:
+        ranked = [b["name"] for b in bidders if "rank" in b]
+        ev = {"n": n, "full_coverage": False, "bidders_carrying_a_rank": ranked}
+        if ranked:
+            return CheckResult(
+                "C5", "Ranking integrity", BLOCKER, FAIL,
+                f"C5 FAIL — the evaluation record is incomplete, so no bidder "
+                f"may carry a rank, but {len(ranked)} do ({', '.join(ranked)}). "
+                f"A rank computed on ragged coverage orders the evaluator's "
+                f"calendar, not the bidders. BLOCKER.", ev)
+        return CheckResult(
+            "C5", "Ranking integrity", BLOCKER, PASS,
+            f"C5 PASS — partial coverage: no bidder carries a rank, as ruled "
+            f"({n} bidder(s) listed, unranked).", ev)
+
+    ranks = [b["rank"] for b in bidders]
     ev = {"ranks": sorted(ranks), "n": n, "full_coverage": full_coverage}
     if sorted(ranks) != list(range(1, n + 1)):
         detail = "duplicate" if len(set(ranks)) != len(ranks) else "gap"
@@ -234,22 +264,19 @@ def check_c5(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
             return CheckResult("C5", "Ranking integrity", BLOCKER, FAIL,
                                f"C5 FAIL — inversion at rank {a['rank']}: {a['name']} "
                                f"overall {oa} < {b['name']} {ob}. BLOCKER.", ev)
-        # The documented tiebreak (on equal Overall, the lower total ranks higher)
-        # is only enforced as a BLOCKER at FULL coverage. At PARTIAL coverage the
-        # provisional Overalls legitimately collapse toward a shared number, so
-        # many bidders tie on Overall by construction; the secondary ordering key
-        # is then a *defined ordering*, not a violation. We still require ranks
-        # contiguous 1..N and sorted descending by Overall (checked above) and
-        # accept the equal-Overall groupings without flagging.
-        if full_coverage and abs(oa - ob) <= 1e-9 and a["total"] > b["total"] + MONEY_TOL:
+        # The documented tiebreak: on equal Overall, the lower total ranks
+        # higher. Enforced unconditionally now — this branch is only reachable
+        # at full coverage (the partial-coverage special case that used to
+        # excuse collapsed provisional Overalls is gone, along with the
+        # provisional Overalls themselves).
+        if abs(oa - ob) <= 1e-9 and a["total"] > b["total"] + MONEY_TOL:
             return CheckResult("C5", "Ranking integrity", BLOCKER, FAIL,
                                f"C5 FAIL — tiebreak violated at rank {a['rank']}: {a['name']} "
                                f"total ${a['total']:,.0f} > {b['name']} ${b['total']:,.0f} on "
                                f"equal overall. BLOCKER.", ev)
-    detail = ("sort + tiebreak consistent" if full_coverage
-              else "sort descending by Overall; equal-Overall ties accepted at partial coverage")
     return CheckResult("C5", "Ranking integrity", BLOCKER, PASS,
-                       f"C5 PASS — ranks contiguous 1..{n}, {detail}.", ev)
+                       f"C5 PASS — ranks contiguous 1..{n}, sort + tiebreak "
+                       f"consistent.", ev)
 
 
 # ----------------------------------------------------------------------------
@@ -417,7 +444,35 @@ def check_c11(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
     run's category weights (weighted SUM over scored categories x10 — the
     scoring contract), and require the emitted Overall to equal it. Nothing —
     curve, bonus, or manual edit — may adjust the ranked number (P0-6, Floyd
-    consolidated ruling verdict d)."""
+    consolidated ruling verdict d).
+
+    AT PARTIAL COVERAGE C11 ASSERTS THE OVERALL IS ABSENT (Marvin P1-2 §4.3).
+    As built this check compared a re-derived `expected` (a number) against the
+    `emitted` Overall — and §3.3 deliberately withholds the emitted Overall at
+    partial coverage, so it would have FAILED on every honest provisional run.
+    The absence is its own re-derivable claim, not a hole in the check:
+    WITHHOLDING IS NOT ADJUSTING.
+    """
+    full_coverage = bool(pipeline_result.get("full_coverage", False))
+    if not full_coverage:
+        emitted = [b["name"] for b in pipeline_result["bidders"]
+                   if b["overall"].get("numeric") is not None]
+        ev = {"full_coverage": False, "bidders_with_an_overall": emitted}
+        if emitted:
+            return CheckResult(
+                "C11", "Overall = honest weighted average (no adjustment)",
+                BLOCKER, FAIL,
+                f"C11 FAIL — the evaluation record is incomplete, so no Overall "
+                f"may be emitted, but {len(emitted)} bidder(s) carry one "
+                f"({', '.join(emitted)}). An Overall computed on a partial "
+                f"record is not a weaker answer to the same question; it is a "
+                f"different question. BLOCKER.", ev)
+        return CheckResult(
+            "C11", "Overall = honest weighted average (no adjustment)",
+            BLOCKER, PASS,
+            "C11 PASS — partial coverage: the Overall is withheld for every "
+            "bidder, as ruled.", ev)
+
     cats = pipeline_result.get("categories", []) or []
     weights = {c["key"]: c["weight_pct"] / 100.0 for c in cats}
     per_bidder = []
@@ -460,35 +515,119 @@ def check_c11(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
 # ----------------------------------------------------------------------------
 # C12 — Qualitative coverage gating
 # ----------------------------------------------------------------------------
-def check_c12(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+def check_c12(matrix_parse, run_inputs, pipeline_result,
+              *, summary_context=None) -> CheckResult:
+    """C12 VERIFIES THAT THE DOCUMENT MAKES NO CLAIM THE RUN IS NOT ENTITLED TO.
+
+    Rewritten to Marvin's P1-2 §4.2 contract. The old check enforced an asterisk
+    ("63* (prov., 60% coverage)") and a `applied` curve flag — half of it was
+    already DEAD (the curve was retired under P0-6, so `applied` is always
+    False), and the other half policed exactly the marker §2.2 rules
+    insufficient: a caveat does not survive a phone photo of the ranking table.
+
+    Note the shape of the win: C12 GETS SIMPLER. It stops policing a label and
+    starts re-deriving an ABSENCE. Absences are cheap to check and impossible
+    to fudge.
+
+    Every assertion is a BLOCKER, and that passes Marvin's own discriminator
+    (the one Floyd adopted as the program standard): each violation is the
+    DOCUMENT CONTRADICTING ITSELF — the run computed partial coverage and the
+    document made a full-coverage claim. The operator is not even a party to it.
+    That is not the tool disagreeing with anyone.
+    """
+    bidders = pipeline_result["bidders"]
+    cats = pipeline_result.get("categories", []) or []
+    weights = {c["key"]: c["weight_pct"] / 100.0 for c in cats}
+    full_coverage = bool(pipeline_result.get("full_coverage", False))
+    watermark_tokens = [r["token"] for r in (pipeline_result.get("watermark") or [])]
+
+    # (e) every per-bidder coverage figure re-derives from the scored-cell count
+    #     against the framework weights — INDEPENDENTLY, not echoed.
     per_bidder = []
-    bad = None
-    for b in pipeline_result["bidders"]:
-        cov = b["overall"].get("coverage")
-        applied = b["overall"].get("applied", False)
-        display = str(b["overall"].get("display", ""))
-        # the pipeline renders a partial-coverage Overall two ways, both carrying
-        # the '*' provisional marker: "63* (prov., 60% coverage)" and the
-        # no-scored-categories "—*". Treat either as the provisional flag so the
-        # check is robust to the exact wording (the '*'/'prov' marker is the
-        # contract, not the surrounding phrasing).
-        provisional = ("prov" in display.lower()) or display.rstrip().endswith("*")
-        per_bidder.append({"name": b["name"], "coverage": cov, "applied": applied,
-                           "provisional_flag": provisional})
-        if cov is not None and cov < 0.999:
-            if applied or not provisional:
-                if bad is None:
-                    bad = (b["name"], cov, applied, provisional)
-    if bad is not None:
-        nm, cov, applied, prov = bad
-        why = "curved" if applied else "not flagged PROVISIONAL"
-        return CheckResult("C12", "Qualitative coverage gating", BLOCKER, FAIL,
-                           f"C12 FAIL — {nm} coverage={cov} but {why} "
-                           f"(applied={applied}, provisional={prov}). BLOCKER.",
-                           {"per_bidder": per_bidder})
-    return CheckResult("C12", "Qualitative coverage gating", BLOCKER, PASS,
-                       "C12 PASS — coverage stated; provisional/curve rules honored.",
-                       {"per_bidder": per_bidder})
+    bad_cov = None
+    for b in bidders:
+        scored_weight = sum(
+            w for key, w in weights.items()
+            if (b.get("scores") or {}).get(key) is not None)
+        emitted = b["overall"].get("coverage")
+        per_bidder.append({"name": b["name"], "emitted_coverage": emitted,
+                           "recomputed_coverage": round(scored_weight, 6)})
+        if emitted is None or abs(emitted - scored_weight) > 1e-6:
+            if bad_cov is None:
+                bad_cov = (b["name"], emitted, scored_weight)
+    ev = {"per_bidder": per_bidder, "full_coverage": full_coverage,
+          "watermark": watermark_tokens}
+
+    if bad_cov is not None:
+        nm, emitted, recomputed = bad_cov
+        return CheckResult(
+            "C12", "Document claims match the run's entitlement", BLOCKER, FAIL,
+            f"C12 FAIL — {nm}: emitted coverage {emitted} does not re-derive "
+            f"from the scored cells against the framework weights "
+            f"({recomputed:.6g}). BLOCKER.", ev)
+
+    if not full_coverage:
+        # (a) no bidder carries a rank
+        ranked = [b["name"] for b in bidders if "rank" in b]
+        if ranked:
+            return CheckResult(
+                "C12", "Document claims match the run's entitlement", BLOCKER,
+                FAIL,
+                f"C12 FAIL — partial coverage, but {len(ranked)} bidder(s) "
+                f"carry a rank ({', '.join(ranked)}). A provisional card does "
+                f"not rank. BLOCKER.", ev)
+        # (b) no Overall numeric is emitted for any bidder
+        scored = [b["name"] for b in bidders
+                  if b["overall"].get("numeric") is not None]
+        if scored:
+            return CheckResult(
+                "C12", "Document claims match the run's entitlement", BLOCKER,
+                FAIL,
+                f"C12 FAIL — partial coverage, but {len(scored)} bidder(s) "
+                f"carry an Overall ({', '.join(scored)}). A provisional card "
+                f"does not print an Overall. BLOCKER.", ev)
+        # (c) the summary names no leader
+        leader = (summary_context or {}).get("winner_name")
+        if leader:
+            return CheckResult(
+                "C12", "Document claims match the run's entitlement", BLOCKER,
+                FAIL,
+                f"C12 FAIL — partial coverage, but the summary names a leader "
+                f"({leader!r}). A front-runner is a ranking claim. BLOCKER.",
+                ev)
+        # (d) the watermark is present and carries the evaluation-incomplete
+        #     reason
+        if "evaluation incomplete" not in watermark_tokens:
+            return CheckResult(
+                "C12", "Document claims match the run's entitlement", BLOCKER,
+                FAIL,
+                f"C12 FAIL — partial coverage, but the artifacts do not carry "
+                f"the 'evaluation incomplete' watermark reason (got "
+                f"{watermark_tokens or 'none'}). BLOCKER.", ev)
+        return CheckResult(
+            "C12", "Document claims match the run's entitlement", BLOCKER, PASS,
+            "C12 PASS — partial coverage: no rank, no Overall, no named leader, "
+            "and the artifacts are watermarked 'evaluation incomplete'. "
+            "Coverage re-derives for every bidder.", ev)
+
+    # FULL coverage — the converse (§4.2): no provisional marking, no
+    # evaluation-incomplete watermark reason, ranking present and complete.
+    if "evaluation incomplete" in watermark_tokens:
+        return CheckResult(
+            "C12", "Document claims match the run's entitlement", BLOCKER, FAIL,
+            "C12 FAIL — full coverage, but the artifacts carry the "
+            "'evaluation incomplete' watermark reason. BLOCKER.", ev)
+    unranked = [b["name"] for b in bidders if "rank" not in b]
+    if unranked:
+        return CheckResult(
+            "C12", "Document claims match the run's entitlement", BLOCKER, FAIL,
+            f"C12 FAIL — full coverage, but {len(unranked)} bidder(s) carry no "
+            f"rank ({', '.join(unranked)}). BLOCKER.", ev)
+    return CheckResult(
+        "C12", "Document claims match the run's entitlement", BLOCKER, PASS,
+        f"C12 PASS — full coverage: every bidder ranked and scored, no "
+        f"provisional marking. Coverage re-derives for all {len(bidders)} "
+        f"bidder(s).", ev)
 
 
 # ----------------------------------------------------------------------------
@@ -723,6 +862,251 @@ def check_c18(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
 
 
 # ----------------------------------------------------------------------------
+# C19 — Framework drift vs the declaration (Marvin §4.4, W1/W2/W5/W6/W8)
+# ----------------------------------------------------------------------------
+# THE CRUX OF P1-4, so the reasoning is written down here rather than in a
+# review doc nobody reads at 5pm:
+#
+#   SEVERITY KEYS ON THE DECLARATION, NOT ON THE DRIFT.
+#   Declared drift is a WARN. Undeclared drift, and any self-contradicting
+#   declaration, is a BLOCKER. The harm was never the deviation. The harm is
+#   the silence.
+#
+# A blanket BLOCKER on drift would fire on every roofing-only package and every
+# legitimate re-weighting — and a control that fires on the honest case trains
+# the operator to click past it. Note also what this check does NOT do: it never
+# fires because the framework disagrees with the tool's preference. Every
+# BLOCKER below is the document contradicting ITSELF. That is the test to apply
+# to any check you are tempted to add here.
+def check_c19(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    pack = pipeline_result.get("pack")
+    if pack is None:
+        return CheckResult(
+            "C19", "Framework drift vs declared basis", INFO, PASS,
+            "C19 INFO — no run pack supplied; there is no declared framework "
+            "basis to check drift against.", {"input_channel": "individual"})
+
+    basis = pack.framework_basis
+    ev = {
+        "framework_basis": basis,
+        "framework_hash": pack.framework_hash,
+        "standing_hash": pack.standing_hash,
+        "standing_version": pack.standing_version,
+        "standing_effective_date": pack.standing_effective_date,
+        "ruling_note": pack.framework_ruling_note,
+    }
+
+    # W8 — the bootstrap. Falke has no standing framework on file (§10.2), so
+    # there is nothing to measure drift FROM. The check cannot claim what it does
+    # not know: measuring against ARA's shipped default would be reporting a
+    # policy-drift finding about a vendor artifact, which is F1's error with a
+    # different subject. It degrades honestly and says so.
+    if not pack.standing_available:
+        return CheckResult(
+            "C19", "Framework drift vs declared basis", WARN, FAIL,
+            "C19 WARN — no standing evaluation framework was on file for this "
+            "run, so departure from Falke's evaluation policy CANNOT be "
+            "detected. The categories and weights below were supplied for this "
+            "project and are disclosed as such; no claim is made about policy "
+            "drift. This degrades to a warning until Falke adopts a versioned, "
+            "dated standing-framework.xlsx of their own.", ev)
+
+    drifted = pack.framework_hash != pack.standing_hash
+    ev["drifted"] = drifted
+
+    # W1 + W2 — undeclared drift / a declaration that contradicts its own
+    # content. Mechanically one condition; both are BLOCKER, and both are the
+    # same shape as F1's fingerprint-contradiction gate.
+    if basis == "standing" and drifted:
+        return CheckResult(
+            "C19", "Framework drift vs declared basis", BLOCKER, FAIL,
+            f"C19 FAIL — the Framework tab declares basis 'standing' (Falke's "
+            f"standing framework, unmodified) but its categories/weights do NOT "
+            f"match standing framework {pack.standing_version} "
+            f"(effective {pack.standing_effective_date}). The declaration "
+            f"contradicts its own content: either restore the standing weights, "
+            f"or declare what these weights actually are ('project-specific' or "
+            f"'revised-post-opening') with a ruling note. BLOCKER.", ev)
+
+    if basis == "standing":
+        return CheckResult(
+            "C19", "Framework drift vs declared basis", WARN, PASS,
+            f"C19 PASS — categories and weights match Falke's standing "
+            f"framework {pack.standing_version} (effective "
+            f"{pack.standing_effective_date}), applied unmodified.", ev)
+
+    # W5 / W6 — declared, disclosed, legitimate. Logged; no friction beyond that.
+    return CheckResult(
+        "C19", "Framework drift vs declared basis", WARN, FAIL,
+        f"C19 WARN — the evaluation framework departs from Falke's standing "
+        f"framework {pack.standing_version} and says so: declared "
+        f"'{basis}' with the ruling recorded "
+        f"(\"{pack.framework_ruling_note}\"). Legitimate and disclosed on the "
+        f"card; surfaced here so the departure is in the award file.", ev)
+
+
+# ----------------------------------------------------------------------------
+# C20 — Two-clock coherence (Marvin §4.4, W3/W4)
+# ----------------------------------------------------------------------------
+# How one workbook honors two clocks: it DECLARES both dates and audits their
+# ordering. The file is a container, not a semantic merge — which is what makes
+# Floyd's protected-list note ("the run pack packages them, it does not merge
+# their semantics") operationally true rather than merely asserted.
+#
+# Honest scope note (§4.1): the pack does not introduce the post-hoc tuning
+# exposure and does not eliminate it. Every cell in the pack is written after
+# bids are open, so no file SHAPE can enforce the plan-lock; only an artifact
+# that exists before bid opening can. What this check does is refuse to let a
+# self-contradicting record pass silently.
+def check_c20(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    from .run_pack import as_date
+
+    pack = pipeline_result.get("pack")
+    if pack is None:
+        return CheckResult(
+            "C20", "Framework/scoring date coherence", INFO, PASS,
+            "C20 INFO — no run pack supplied; no declared dates to check.", {})
+
+    bid_open = as_date(pack.bid_opening_date)
+    lock = as_date(pack.framework_lock_date)
+    scored = as_date(pack.scoring_completed_date)
+    ev = {"bid_opening_date": pack.bid_opening_date,
+          "framework_lock_date": pack.framework_lock_date,
+          "scoring_completed_date": pack.scoring_completed_date,
+          "framework_basis": pack.framework_basis}
+
+    # W3 — 'project-specific' claims a PRE-opening lock and states a POST-opening
+    # date. The declaration contradicts its own dates.
+    if (pack.framework_basis == "project-specific" and lock and bid_open
+            and lock > bid_open):
+        return CheckResult(
+            "C20", "Framework/scoring date coherence", BLOCKER, FAIL,
+            f"C20 FAIL — the Framework tab declares basis 'project-specific', "
+            f"which means the weights were locked BEFORE bids were opened — but "
+            f"the stated lock date ({pack.framework_lock_date}) is AFTER the "
+            f"bid opening date ({pack.bid_opening_date}). The declaration "
+            f"contradicts its own dates. If the weights were in fact set after "
+            f"opening, declare 'revised-post-opening' — that is legitimate and "
+            f"it is disclosed on the card. BLOCKER.", ev)
+
+    # W4 is UNDEFINED, not evaded, on a provisional run: there is no scoring
+    # completion date because the record is open (§5.3). Name the skip and why
+    # — the C-1 lesson: say the thing you know, and say what you could not check
+    # rather than leaving it to be inferred.
+    if lock and not scored:
+        return CheckResult(
+            "C20", "Framework/scoring date coherence", BLOCKER, PASS,
+            f"C20 PASS — W3 coherent (bid opening {pack.bid_opening_date}; "
+            f"framework lock {pack.framework_lock_date}). W4 NOT EVALUATED: "
+            f"the evaluation record is open, so there is no completion date to "
+            f"order the framework lock against.", ev)
+
+    # W4 — the plan was locked after the record was made. Incoherent on its face.
+    if lock and scored and lock > scored:
+        return CheckResult(
+            "C20", "Framework/scoring date coherence", BLOCKER, FAIL,
+            f"C20 FAIL — the framework lock date ({pack.framework_lock_date}) "
+            f"is AFTER the scoring completed date "
+            f"({pack.scoring_completed_date}): the evaluation plan was locked "
+            f"after the evaluation record was made. One of the two dates is "
+            f"wrong. BLOCKER.", ev)
+
+    return CheckResult(
+        "C20", "Framework/scoring date coherence", BLOCKER, PASS,
+        f"C20 PASS — declared dates are coherent (bid opening "
+        f"{pack.bid_opening_date or 'n/a'}; framework lock "
+        f"{pack.framework_lock_date or 'n/a'}; scoring completed "
+        f"{pack.scoring_completed_date or 'n/a'}).", ev)
+
+
+# ----------------------------------------------------------------------------
+# C21 — Input-channel provenance (Marvin §9.3)
+# ----------------------------------------------------------------------------
+# Using the individual flags when a pack SHOULD exist means the firm names were
+# not pipeline-originated — the one thing the pack was built to guarantee.
+#
+# The engine cannot reliably DETECT this (it cannot see the matrix run's output
+# dir), so it is handled honestly in two places: the skill asks a named question,
+# and this check puts the smell in the award file rather than relying on prose
+# the operator may never read. It is a WARN, never a block: the operator may have
+# legitimately lost the file, and blocking on a guess would be the tool
+# overreaching.
+def check_c21(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    channel = pipeline_result.get("input_channel", "individual")
+    stamped = bool(matrix_parse.producer_stamp)
+    ev = {"input_channel": channel, "matrix_stamped": stamped}
+
+    if channel == "pack":
+        return CheckResult(
+            "C21", "Input-channel provenance", WARN, PASS,
+            "C21 PASS — inputs arrived via the run pack, so the scored-firm "
+            "names originate from the matrix pipeline rather than from re-entry.",
+            ev)
+    if stamped:
+        return CheckResult(
+            "C21", "Input-channel provenance", WARN, FAIL,
+            "C21 WARN — this matrix was produced by create-matrix (it carries "
+            "the producer stamp), which emits a Scorecard Inputs pack, but the "
+            "scoring inputs were supplied as individual hand-built files. The "
+            "firm names in this run were therefore not pipeline-originated. "
+            "Legitimate if the pack was lost or this is an archival re-render — "
+            "recorded here either way.", ev)
+    return CheckResult(
+        "C21", "Input-channel provenance", WARN, PASS,
+        "C21 PASS — individual inputs against an unstamped/legacy matrix; no "
+        "pack would exist for it. This is the supported legacy path.", ev)
+
+
+# ----------------------------------------------------------------------------
+# C22 — Run-pack binding provenance (Marvin §8.3, tiers I4/I5/I7)
+# ----------------------------------------------------------------------------
+# The hard tiers (I3 wrong building, I6 roster mismatch, I8 edited producer
+# field) never reach the audit — they exit 2 before anything is rendered. What
+# lands here are the CONFIRMABLE tiers, so the award file records which one
+# applied.
+def check_c22(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    pack = pipeline_result.get("pack")
+    if pack is None:
+        return CheckResult(
+            "C22", "Run-pack binding provenance", INFO, PASS,
+            "C22 INFO — no run pack supplied; no pack-to-matrix binding to "
+            "record.", {})
+
+    binding = pack.binding or {}
+    tier = binding.get("tier")
+    ev = dict(binding)
+
+    if tier == "I4":
+        return CheckResult(
+            "C22", "Run-pack binding provenance", WARN, PASS,
+            f"C22 PASS — the run pack is bound to this matrix run "
+            f"({binding.get('run_id_matrix')}); inputs are pipeline-originated.",
+            ev)
+    if tier == "I5":
+        return CheckResult(
+            "C22", "Run-pack binding provenance", WARN, FAIL,
+            f"C22 WARN — the run pack was built from a DIFFERENT matrix run "
+            f"(pack {binding.get('run_id_pack') or '(none)'} vs matrix "
+            f"{binding.get('run_id_matrix')}). The scored-firm roster, project "
+            f"identity, and SF all reconcile, so this is consistent with a "
+            f"corrected-matrix re-run — but the operator confirmed it rather "
+            f"than the tool proving it. Recorded.", ev)
+    line = ("C22 WARN — this matrix carries no run identity (it predates the "
+            "stamp or was built by hand), so the pack cannot be proven to have "
+            "come from it. The roster reconciles; provenance was confirmed by "
+            "the operator. Recorded.")
+    # Floyd F-3: name the degradation rather than leave it inferable. An
+    # identity-less matrix means the cross-project check could not run at all —
+    # the one tier Marvin ruled "exit 2, ALWAYS. No warning tier."
+    if binding.get("cross_project_check_ran") is False:
+        line += (" The matrix also carries no project identity, so the "
+                 "cross-project check (I3) COULD NOT RUN — nothing in this run "
+                 "verifies that the pack belongs to this building.")
+    return CheckResult(
+        "C22", "Run-pack binding provenance", WARN, FAIL, line, ev)
+
+
+# ----------------------------------------------------------------------------
 # orchestration
 # ----------------------------------------------------------------------------
 @dataclass
@@ -772,7 +1156,8 @@ def _verdict(checks: List[CheckResult]) -> str:
 
 def audit(matrix_parse, run_inputs, pipeline_result,
           *, aliases: Optional[Dict[str, str]] = None,
-          report_text: str = "") -> AuditResult:
+          report_text: str = "",
+          summary_context: Optional[Dict] = None) -> AuditResult:
     """Run all 18 checks (C1..C18). Pure: no LLM, no network. Failures do NOT
     short-circuit — every check runs so the report is complete.
 
@@ -782,6 +1167,10 @@ def audit(matrix_parse, run_inputs, pipeline_result,
     aliases         : the alias map supplied to the run (for C15 round-trip).
     report_text     : the assembled audit_report.md body (for C13's PII scan);
                       when empty C13 still runs over exclusion-block lengths.
+    summary_context : the built summary context (for C12's "the summary names
+                      no leader" assertion). None = not built yet; C12 then
+                      checks only what it can see, and says so by omission
+                      rather than by inventing a pass.
     """
     checks: List[CheckResult] = [
         check_c1(matrix_parse, run_inputs, pipeline_result),
@@ -795,13 +1184,18 @@ def audit(matrix_parse, run_inputs, pipeline_result,
         check_c9(matrix_parse, run_inputs, pipeline_result),
         check_c10(matrix_parse, run_inputs, pipeline_result),
         check_c11(matrix_parse, run_inputs, pipeline_result),
-        check_c12(matrix_parse, run_inputs, pipeline_result),
+        check_c12(matrix_parse, run_inputs, pipeline_result,
+                  summary_context=summary_context),
         check_c13(matrix_parse, run_inputs, pipeline_result, report_text=report_text),
         check_c14(matrix_parse, run_inputs, pipeline_result),
         check_c15(matrix_parse, run_inputs, pipeline_result, aliases=aliases),
         check_c16(matrix_parse, run_inputs, pipeline_result),
         check_c17(matrix_parse, run_inputs, pipeline_result),
         check_c18(matrix_parse, run_inputs, pipeline_result),
+        check_c19(matrix_parse, run_inputs, pipeline_result),
+        check_c20(matrix_parse, run_inputs, pipeline_result),
+        check_c21(matrix_parse, run_inputs, pipeline_result),
+        check_c22(matrix_parse, run_inputs, pipeline_result),
     ]
     verdict = _verdict(checks)
     return AuditResult(

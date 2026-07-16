@@ -84,7 +84,8 @@ from src.normalize import build_normalized_view, compute_cross_bid_stats, normal
 from src.normalized_models import NormalizedBid
 from src.reconcile import reconcile_written_matrix
 from src.run_config import SF_GATE_STOP, RunInputs, load_run_config, resolve_sf_basis
-from src.write_matrix import apply_quarantine, write_matrix
+from src.scorecard_pack import emit_scorecard_pack, read_standing_framework
+from src.write_matrix import apply_quarantine, mint_run_id, write_matrix
 
 # ---------------------------------------------------------------------------
 # Skip predicates
@@ -123,6 +124,28 @@ def _should_skip(raw: dict, file_path: Path) -> tuple[bool, str]:
     return False, ""
 
 
+def _sorted_roster(
+    bids: list[NormalizedBid],
+    summaries: list[dict],
+) -> list[NormalizedBid]:
+    """The scored-bidder roster in MATRIX ORDER (Marvin §3.4).
+
+    write_matrix sorts bidders by leveled total ascending and reports that order
+    back in ``summaries``; the pack's Scores tab must carry exactly that order,
+    so the operator's grid reads left-to-right the same way the workbook's
+    columns do. Deriving the order from the writer's own output rather than
+    re-sorting here keeps ONE sort in the codebase — a second one would drift.
+    """
+    by_name = {b.contractor_name: b for b in bids}
+    ordered = [by_name[s["contractor"]] for s in summaries
+               if s.get("contractor") in by_name]
+    # any bid the writer did not report on still belongs in the roster — never
+    # drop a bidder silently just because the summary shape surprised us.
+    seen = {b.contractor_name for b in ordered}
+    ordered.extend(b for b in bids if b.contractor_name not in seen)
+    return ordered
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -134,13 +157,20 @@ def run_pipeline(
     sf_basis: float | None = None,
     sf_confirmed: bool = False,
     expect_bids: int | None = None,
+    standing_framework: Path | None = None,
 ) -> None:
     interim_dir = Path(interim_dir)
     out_path = Path(out_path)
 
+    # Run identity, minted at run start (Marvin §10.1). Stamped into the
+    # workbook and carried into the run pack's Settings tab so the pack->matrix
+    # binding (§8.3) rests on a real field rather than an assumed one.
+    run_id = mint_run_id()
+
     print("=" * 70)
     print("FALKE Matrix Pipeline — Bid Comparison Run")
     print("=" * 70)
+    print(f"Run ID        : {run_id}")
 
     # --- Validate paths ---
     if not interim_dir.exists():
@@ -383,6 +413,7 @@ def run_pipeline(
         run=run,
         audit_items=audit_items,
         leveled_bids=leveled_bids,
+        run_id=run_id,
     )
     print()
 
@@ -435,6 +466,52 @@ def run_pipeline(
         sys.exit(3)
     print(f"  Tie-out OK: grand totals, footer arithmetic, division subtotals, "
           f"and audit-row count all reconcile (within ${1}).")
+    print()
+
+    # --- Stage 6c: Emit the scorecard run pack (P1-4, verdict c) ---
+    # The disclosure moment: the operator learns about the scoring inputs HERE,
+    # at the end of the matrix run — days before scoring, when they can still
+    # act on it — instead of at step 5 of a scorecard conversation after two
+    # confirmation stops (Boris §B.3).
+    #
+    # NOT emitted on the Stage-6b quarantine path (exit 3): that workbook failed
+    # the producer's OWN self-check and carries a "do not rely on the flagged
+    # figures" banner. Handing the operator a scoring kit for it would invite
+    # scoring a workbook the producer has disowned — and the scorecard would
+    # block it at audit C17 anyway. Fix the matrix, re-run, get a pack.
+    print("Stage 6c: Emitting the scorecard run pack ...")
+    try:
+        standing = read_standing_framework(
+            str(standing_framework) if standing_framework else None)
+    except ValueError as e:
+        print(f"STOP (exit 2): --standing-framework could not be read — {e}")
+        sys.exit(2)
+    if not standing.available:
+        # W8 bootstrap (Marvin §10.2). Falke has no standing framework on file,
+        # so the pack pre-fills ARA's shipped DEFAULT as starting content and
+        # says so. It does NOT treat that default as Falke's evaluation policy:
+        # measuring drift from a vendor artifact and reporting it as a
+        # policy-drift finding would be the tool asserting a fact it does not
+        # know. The scorecard's drift check degrades to WARN-always accordingly.
+        print("  NOTE: no standing framework supplied (--standing-framework). "
+              "The Framework tab is pre-filled with ARA's shipped default as a "
+              "STARTING POINT, and the pack records 'none (shipped default)'. "
+              "The scorecard's weights-drift check will WARN and claim nothing "
+              "about policy drift until Falke adopts a versioned, dated "
+              "standing-framework.xlsx of their own.")
+    pack_path = emit_scorecard_pack(
+        out_dir=out_path.parent,
+        matrix_path=out_path,
+        run=run,
+        run_id=run_id,
+        bids=_sorted_roster(normalized_bids, summaries),
+        matrix_exclusions=dropped_inputs,
+        standing=standing,
+    )
+    print(f"  Scorecard run pack: {pack_path}")
+    print("  Fill in the Baseline tab and the Scores grid, then bring this ONE "
+          "file to the scorecard (--inputs). The firm names are already in it — "
+          "do not retype them.")
     print()
 
     # --- Stage 7: Summary report ---
@@ -539,6 +616,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "knows its PDF count). Mismatch with the loaded valid-bid count "
              "hard-stops (exit 2) before anything is written.",
     )
+    parser.add_argument(
+        "--standing-framework",
+        type=Path,
+        default=None,
+        dest="standing_framework",
+        help="OPTIONAL. Falke's standing evaluation framework "
+             "(standing-framework.xlsx: sheet Standing_Framework, a Version + "
+             "an Effective Date, and the same Category | Short Label | Weight "
+             "(%%) | What it captures table as the Framework tab). The run pack "
+             "pre-fills its Framework tab from it and stamps its semantic hash, "
+             "so the scorecard can detect and disclose departure from Falke's "
+             "own evaluation policy. WITHOUT it the pack pre-fills ARA's "
+             "shipped default as a starting point, records 'none (shipped "
+             "default)', and the scorecard's drift check WARNs and claims "
+             "nothing about policy drift — it never treats a vendor default as "
+             "an owner's-rep firm's policy.",
+    )
     return parser.parse_args(argv)
 
 
@@ -551,4 +645,5 @@ if __name__ == "__main__":
         sf_basis=args.sf_basis,
         sf_confirmed=args.sf_confirmed,
         expect_bids=args.expect_bids,
+        standing_framework=args.standing_framework,
     )

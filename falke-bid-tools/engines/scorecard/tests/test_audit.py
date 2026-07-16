@@ -108,7 +108,8 @@ def test_artifacts_written(tmp_path):
     assert os.path.exists(paths["audit_json"])
     data = json.load(open(paths["audit_json"]))
     assert data["verdict"] in (A.V_PASS, A.V_WARN, A.V_FAIL)
-    assert len(data["checks"]) == 18   # C1..C16 + C17/C18 (P0-7)
+    # C1..C16 + C17/C18 (P0-7) + C19..C22 (P1-4 run pack)
+    assert len(data["checks"]) == 22
     md = open(paths["report_md"]).read()
     assert "Overall verdict:" in md
     assert "## Checks" in md
@@ -191,61 +192,88 @@ def test_c5_pass(tmp_path):
 
 
 def test_c5_fail_duplicate_rank(tmp_path):
+    """Ranks exist only at FULL coverage now, so the fixture declares it."""
     result, cfg = _run(tmp_path)
     r = copy.deepcopy(result)
     r["parsed"] = result["parsed"]
+    r["full_coverage"] = True
+    for i, b in enumerate(r["bidders"], start=1):
+        b["rank"] = i
     r["bidders"][0]["rank"] = r["bidders"][1]["rank"]   # duplicate rank
     c = A.check_c5(r["parsed"], cfg, r)
     assert c.status == A.FAIL and c.severity == A.BLOCKER
 
 
 # ---- C5 regression: partial-coverage equal-Overall ties must NOT FAIL -------
-def _equal_overall_partial_result():
-    """Hand-built result mirroring the live no-curve, 60%-
-    coverage) run: every bidder's provisional Overall collapses to the SAME
-    number, so they legitimately tie on Overall; ranks are contiguous and sorted
-    descending by Overall, with the documented tiebreak (lower total first) as
-    the secondary key. full_coverage is False. This must PASS, not BLOCKER."""
+def _partial_result(*, ranked: bool):
+    """A partial-coverage result — with or without ranks."""
     def bd(name, total, rank):
-        return {"name": name, "total": total, "per_sf": int(round(total / SF_BASIS)),
-                "tier": "MID", "bid_m": total / 1e6, "rank": rank,
-                "overall": {"numeric": 63, "applied": False, "coverage": 0.6,
-                            "weighted_average": 63, "display": "63* (prov., 60% coverage)"},
-                "section_c": {}, "flags": []}
-    # equal Overall (63), tiebreak orders by ascending total -> ranks 1..4
+        b = {"name": name, "total": total, "per_sf": int(round(total / SF_BASIS)),
+             "tier": "MID", "bid_m": total / 1e6,
+             "overall": {"numeric": None, "applied": False, "coverage": 0.6,
+                         "weighted_average": None,
+                         "display": "Pending — 3 of 8 categories outstanding"},
+             "section_c": {}, "flags": []}
+        if ranked:
+            b["rank"] = rank
+        return b
     bidders = [bd("Alpha", 1_800_000, 1), bd("Bravo", 1_900_000, 2),
                bd("Charlie", 2_000_000, 3), bd("Delta", 2_100_000, 4)]
     return {"meta": {"run_id": "t"}, "bidders": bidders, "log": [],
             "fingerprints": [], "full_coverage": False}
 
 
-def test_c5_partial_coverage_equal_overall_passes():
-    """REGRESSION (false BLOCKER): equal Overall at partial coverage is expected;
-    the documented tiebreak is a defined ordering, not a violation."""
-    r = _equal_overall_partial_result()
+def test_c5_partial_coverage_no_rank_passes():
+    """Marvin P1-2 §4.3 — C5's partial-coverage SPECIAL CASE IS DELETED. It used
+    to accept equal-Overall ties "at partial coverage"; there is nothing to tie
+    now, because a provisional run carries no Overall and no rank. C5's contract
+    at partial coverage is simply: no bidder carries a rank, and THE ABSENCE IS
+    THE CHECK. This ruling removes a special case rather than adding one."""
+    r = _partial_result(ranked=False)
     c = A.check_c5(None, _cfg(), r)
     assert c.status == A.PASS, c.verdict_line
     assert c.evidence["full_coverage"] is False
 
 
+def test_c5_partial_coverage_with_a_rank_blocks():
+    """A rank computed on ragged coverage orders the evaluator's calendar, not
+    the bidders — the engine does not rescale, so an unscored category costs its
+    full weight and whoever got scored first floats up."""
+    r = _partial_result(ranked=True)
+    c = A.check_c5(None, _cfg(), r)
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "no bidder may carry a rank" in c.verdict_line
+
+
+def _full_coverage_result():
+    """A ranked, fully-scored result: equal Overall (63), tiebreak orders by
+    ascending total -> ranks 1..4."""
+    r = _partial_result(ranked=True)
+    r["full_coverage"] = True
+    for b in r["bidders"]:
+        b["overall"].update({"coverage": 1.0, "numeric": 63,
+                             "weighted_average": 63, "display": "63"})
+    return r
+
+
 def test_c5_full_coverage_tiebreak_still_blocks():
     """TRUE POSITIVE kept: at FULL coverage, equal Overall with a HIGHER total
     ranked above a lower total is a real tiebreak violation -> BLOCKER."""
-    r = _equal_overall_partial_result()
-    r["full_coverage"] = True
-    for b in r["bidders"]:
-        b["overall"]["coverage"] = 1.0
-        b["overall"]["display"] = "63"
+    r = _full_coverage_result()
     # invert the tiebreak: put the HIGHEST total at rank 1
     r["bidders"][0]["rank"], r["bidders"][3]["rank"] = 4, 1
     c = A.check_c5(None, _cfg(), r)
     assert c.status == A.FAIL and c.severity == A.BLOCKER, c.verdict_line
 
 
-def test_c5_inversion_blocks_at_partial_coverage():
+def test_c5_inversion_blocks_at_full_coverage():
     """TRUE POSITIVE kept: a genuine Overall inversion (higher rank, strictly
-    lower Overall) is a BLOCKER even at partial coverage."""
-    r = _equal_overall_partial_result()
+    lower Overall) is a BLOCKER.
+
+    It used to be asserted at PARTIAL coverage, which is no longer a reachable
+    state: a provisional run carries no Overall to invert and no rank to invert
+    it against. The true positive itself is unchanged and still guarded here."""
+    r = _full_coverage_result()
     r["bidders"][0]["overall"]["numeric"] = 40   # rank 1 now BELOW rank 2's 63
     c = A.check_c5(None, _cfg(), r)
     assert c.status == A.FAIL and c.severity == A.BLOCKER, c.verdict_line
@@ -498,16 +526,88 @@ def test_c12_pass(tmp_path):
     assert A.check_c12(result["parsed"], cfg, result).status == A.PASS
 
 
-def test_c12_fail_curved_provisional(tmp_path):
+def _partial(result):
+    """A partial-coverage copy of a run, with every emitted coverage figure
+    RE-DERIVED from the scores actually present.
+
+    The base fixture is the legacy scaffold path, which is ALREADY partial — so
+    an earlier draft of this helper that assumed 1.0 and wrote `1.0 - weight`
+    produced a coverage figure that did not match its own scores, and C12(e)
+    caught it. That is the check doing exactly its job on a lying fixture; the
+    honest thing is to derive the number rather than assert it."""
+    r = copy.deepcopy(result)
+    r["parsed"] = result["parsed"]
+    r["full_coverage"] = False
+    r["watermark"] = [{"token": "evaluation incomplete", "detail": "x"}]
+    key = r["categories"][0]["key"]
+    r["bidders"][0]["scores"][key] = None
+    weights = {c["key"]: c["weight_pct"] / 100.0 for c in r["categories"]}
+    for b in r["bidders"]:
+        b["overall"]["coverage"] = round(
+            sum(w for k, w in weights.items()
+                if (b.get("scores") or {}).get(k) is not None), 6)
+        b["overall"]["numeric"] = None
+        b.pop("rank", None)
+    return r
+
+
+def test_c12_partial_pass_when_no_claim_is_made(tmp_path):
+    """C12's new contract (Marvin P1-2 §4.2): the document makes no claim the
+    run is not entitled to. It stops policing a label and starts re-deriving an
+    ABSENCE — absences are cheap to check and impossible to fudge."""
+    result, cfg = _run(tmp_path)
+    r = _partial(result)
+    c = A.check_c12(r["parsed"], cfg, r, summary_context={"winner_name": ""})
+    assert c.status == A.PASS, c.verdict_line
+
+
+def test_c12_blocks_a_rank_at_partial_coverage(tmp_path):
+    result, cfg = _run(tmp_path)
+    r = _partial(result)
+    r["bidders"][0]["rank"] = 1              # a rank the run is not entitled to
+    c = A.check_c12(r["parsed"], cfg, r, summary_context={"winner_name": ""})
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "carry a rank" in c.verdict_line
+
+
+def test_c12_blocks_an_overall_at_partial_coverage(tmp_path):
+    result, cfg = _run(tmp_path)
+    r = _partial(result)
+    r["bidders"][0]["overall"]["numeric"] = 82.0
+    c = A.check_c12(r["parsed"], cfg, r, summary_context={"winner_name": ""})
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "carry an Overall" in c.verdict_line
+
+
+def test_c12_blocks_a_named_leader_at_partial_coverage(tmp_path):
+    """A front-runner is a ranking claim — §3.4."""
+    result, cfg = _run(tmp_path)
+    r = _partial(result)
+    c = A.check_c12(r["parsed"], cfg, r,
+                    summary_context={"winner_name": "Acme Restoration"})
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "names a leader" in c.verdict_line
+
+
+def test_c12_blocks_a_missing_watermark_at_partial_coverage(tmp_path):
+    result, cfg = _run(tmp_path)
+    r = _partial(result)
+    r["watermark"] = []                      # never marked PRELIMINARY
+    c = A.check_c12(r["parsed"], cfg, r, summary_context={"winner_name": ""})
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "watermark" in c.verdict_line
+
+
+def test_c12_blocks_a_coverage_figure_that_does_not_re_derive(tmp_path):
+    """(e) — coverage is RE-DERIVED from the scored cells against the framework
+    weights, never echoed."""
     result, cfg = _run(tmp_path)
     r = copy.deepcopy(result)
     r["parsed"] = result["parsed"]
-    b = r["bidders"][0]
-    b["overall"]["coverage"] = 0.6
-    b["overall"]["applied"] = True          # curved on incomplete coverage
-    b["overall"]["display"] = "82"          # no provisional flag
+    r["bidders"][0]["overall"]["coverage"] = 0.42     # a lie
     c = A.check_c12(r["parsed"], cfg, r)
     assert c.status == A.FAIL and c.severity == A.BLOCKER
+    assert "does not re-derive" in c.verdict_line
 
 
 # ============================================================================

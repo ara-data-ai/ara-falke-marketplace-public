@@ -158,18 +158,33 @@ def test_neck_and_neck_close_call_language():
     assert "acme" in bottom and "borealis" in bottom
 
 
-def test_provisional_coverage_framing():
+def test_provisional_summary_is_a_status_document_not_a_hedged_recommendation():
+    """P1-2 §3.4. This test used to require the words "front-runner" and
+    "provisional" in the rationale — i.e. it pinned the exact defect: prose
+    disclaiming a front-runner while NAMING one. A front-runner IS a ranking
+    claim, and softening the sentence around it does not unmake it (F2's shape).
+
+    Worse, the softening was at its most confident when the evidence was
+    thinnest: the close-call hedge needs two Overall numbers to fire, so at zero
+    coverage it could not, and the summary took its "Clear winner, by tier"
+    branch. The asterisk was never the fix. The fix is that the claim is gone.
+    """
     ctx = build_summary_context(_provisional_result())
-    rationale = ctx["winner_rationale"].lower()
-    bottom = ctx["bottom_line"].lower()
-    caveats = " ".join(ctx["caveats"]).lower()
-    # front-runner on a provisional score, not a settled recommendation
-    assert "front-runner" in rationale or "provisional" in rationale
-    assert "provisional" in bottom and "front-runner" in bottom
-    # the provisional caveat is present; no curve language exists anymore
-    assert "provisional" in caveats
-    assert "ranking could shift" in caveats
-    assert "adjusted for presentation" not in caveats
+    assert ctx["full_coverage"] is False
+    # the claim is ABSENT — not hedged
+    assert ctx["winner_name"] == ""
+    assert ctx["winner_rationale"] == ""
+    assert ctx["runners_up_note"] == ""
+    assert "front-runner" not in ctx["bottom_line"].lower()
+    # it is a different document: status, worklist, and no rank column
+    assert ctx["status_header"] == "EVALUATION IN PROGRESS — no recommendation yet"
+    assert "not ranked" in ctx["listing_note"]
+    assert all(b["rank"] == "" for b in ctx["ranked_bidders"])
+    # listed alphabetically — the only order that carries no claim
+    names = [b["name"] for b in ctx["ranked_bidders"]]
+    assert names == sorted(names, key=str.lower)
+    # the caveats block survives (Floyd's protected list holds its tone)
+    assert " ".join(ctx["caveats"])
 
 
 def test_risk_tier_top_guardrail_not_recommendation():

@@ -123,7 +123,12 @@ def _run_json(out_dir):
 
 
 def _no_artifacts(out_dir):
-    for fn in ("scorecard.pdf", "scorecard.html", "scorecard_run.json"):
+    """A gate stop writes NOTHING — under either name. P1-2 §2.3 gives a
+    non-deliverable artifact a distinct filename, so an absence assertion that
+    only knew the deliverable's name would pass while a PRELIMINARY card sat on
+    disk beside it."""
+    for fn in ("scorecard.pdf", "scorecard.html", "scorecard_run.json",
+               "scorecard-PRELIMINARY.pdf", "scorecard-PRELIMINARY.html"):
         assert not os.path.exists(os.path.join(out_dir, fn)), fn
 
 

@@ -171,12 +171,45 @@ def test_scores_non_numeric_stops(tmp_path, simple_fw):
         parse_category_scores(p, simple_fw)
 
 
-def test_scores_blank_cell_stops(tmp_path, simple_fw):
+def test_scores_blank_cell_is_not_yet_scored_not_an_error(tmp_path, simple_fw):
+    """P1-2 §1.1: a blank means NOT YET SCORED. Always. It used to raise, which
+    is what made the provisional pathway dead (F3) — the engine could always do
+    this; the parser rejected the input that would reach it.
+
+    It arrives as None and is NEVER omitted: an omitted key would make "blank"
+    and "column absent" indistinguishable, so coverage would be computed off a
+    shape rather than off a fact."""
     p = write_scores_xlsx(str(tmp_path / "cs.xlsx"),
                           ["Pricing", "Scope", "Docs"],
                           [("Alpha", [9, None, 7])])
-    with pytest.raises(ValueError, match="is blank"):
+    scores = parse_category_scores(p, simple_fw)
+    assert scores["Alpha"] == {"Pricing": 9, "Scope": None, "Docs": 7}
+    assert "Scope" in scores["Alpha"]      # present-and-None, never dropped
+
+
+def test_scores_all_blank_hard_stops(tmp_path, simple_fw):
+    """P1-2 §1.2 — THE one hard stop, and it is degenerate: a grid with zero
+    scored cells anywhere is not a partial evaluation record, it is the blank
+    template. The tool refuses to render NOTHING; it never refuses to render
+    LITTLE. And the leveled matrix already IS the zero-coverage artifact."""
+    p = write_scores_xlsx(str(tmp_path / "cs.xlsx"),
+                          ["Pricing", "Scope", "Docs"],
+                          [("Alpha", [None, None, None]),
+                           ("Beta", [None, None, None])])
+    with pytest.raises(ValueError, match="No category scores were supplied"):
         parse_category_scores(p, simple_fw)
+
+
+def test_one_scored_cell_renders(tmp_path, simple_fw):
+    """§4.4 boundary: 1 of 6 cells → honest, useless, and LEGIBLY useless. The
+    tool does not rule on whether the evaluation is far enough along."""
+    p = write_scores_xlsx(str(tmp_path / "cs.xlsx"),
+                          ["Pricing", "Scope", "Docs"],
+                          [("Alpha", [9, None, None]),
+                           ("Beta", [None, None, None])])
+    scores = parse_category_scores(p, simple_fw)
+    assert scores["Alpha"]["Pricing"] == 9
+    assert scores["Beta"] == {"Pricing": None, "Scope": None, "Docs": None}
 
 
 def test_scores_duplicate_firm_stops(tmp_path, simple_fw):

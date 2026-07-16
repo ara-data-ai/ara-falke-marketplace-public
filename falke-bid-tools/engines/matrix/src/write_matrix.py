@@ -39,6 +39,7 @@ _populate_leveled_sheet with the Falke house format + leveling rules.
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from math import ceil
 from pathlib import Path
@@ -83,21 +84,63 @@ DEFAULT_SF_BASIS_LABEL = "GSF"
 # SUPPORTED_PRODUCER range (engines/scorecard/scorecard/matrix.py).
 # RELEASE.md step-2 TRIPWIRE: any minor+ (format-changing) release must bump
 # PRODUCER_FORMAT_VERSION here AND revisit the scorecard's SUPPORTED_PRODUCER
-# range in the same commit.
+# range in the same commit. The stamp also carries the run identity + project
+# identity properties below; adding a property is additive (an older consumer
+# ignores it) and does NOT itself require a format bump — changing the SHEET
+# GEOMETRY does.
 PRODUCER_NAME = "falke-bid-tools/matrix"
 PRODUCER_FORMAT_VERSION = "0.4.0"
 STAMP_PRODUCER_PROP = "falke_bid_tools.producer"
 STAMP_FORMAT_PROP = "falke_bid_tools.format_version"
 
+# --- Run identity (P1-4 dependency; Marvin §10.1 — belongs to P1-3's contract)
+# The producer stamp carried producer + format version and NO run identity, so
+# the run pack's pack->matrix binding (§8.3) rested on a field that did not
+# exist. It does now: one more StringProperty, minted per run, opaque and
+# collision-free. It is EVIDENCE, NOT A GATE (§8.4) — the roster is the gate.
+STAMP_RUN_ID_PROP = "falke_bid_tools.run_id"
 
-def _stamp_workbook(wb: openpyxl.Workbook) -> None:
-    """Stamp producer + format version as custom doc properties (additive; no
-    cell, row, or sheet is touched)."""
+# --- Project identity. The pack's I3 rule ("pack project identity != matrix
+# project identity -> exit 2, always") needs a matrix-side identity the consumer
+# can re-derive INDEPENDENTLY of the pack. The sheets cannot supply it: the
+# board-facing default sheet is Leveled_Normalized, whose geometry carries the
+# project NAME only (row 6, per bidder) and never the ADDRESS, and row 1 is
+# overwritten by the Stage-6b quarantine banner. So identity is stamped, using
+# the same invisible-doc-property pattern Marvin ratified in §8.1 ("the
+# properties are authoritative; the visible rows are courtesy").
+STAMP_PROJECT_NAME_PROP = "falke_bid_tools.project_name"
+STAMP_PROJECT_ADDRESS_PROP = "falke_bid_tools.project_address"
+STAMP_SF_BASIS_LABEL_PROP = "falke_bid_tools.sf_basis_label"
+
+
+def mint_run_id() -> str:
+    """Mint an opaque, collision-free run identity for one matrix run.
+
+    Called once at run start (src/pipeline.py) and carried into both the
+    workbook stamp and the run pack's Settings tab, so the two are bound by
+    construction rather than by the operator remembering which was which.
+    """
+    return uuid.uuid4().hex[:12]
+
+
+def _stamp_workbook(wb: openpyxl.Workbook, run: RunInputs,
+                    run_id: str) -> None:
+    """Stamp producer, format version, run identity, and project identity as
+    custom doc properties (additive; no cell, row, or sheet is touched)."""
     from openpyxl.packaging.custom import StringProperty
-    wb.custom_doc_props.append(
-        StringProperty(name=STAMP_PRODUCER_PROP, value=PRODUCER_NAME))
-    wb.custom_doc_props.append(
-        StringProperty(name=STAMP_FORMAT_PROP, value=PRODUCER_FORMAT_VERSION))
+
+    props = [
+        (STAMP_PRODUCER_PROP, PRODUCER_NAME),
+        (STAMP_FORMAT_PROP, PRODUCER_FORMAT_VERSION),
+        (STAMP_RUN_ID_PROP, run_id),
+        (STAMP_PROJECT_NAME_PROP, run.project_name),
+        (STAMP_PROJECT_ADDRESS_PROP, run.project_address),
+        (STAMP_SF_BASIS_LABEL_PROP,
+         run.sf_basis_label or DEFAULT_SF_BASIS_LABEL),
+    ]
+    for name, value in props:
+        wb.custom_doc_props.append(
+            StringProperty(name=name, value=str(value if value is not None else "")))
 
 # Column widths
 COL_A_WIDTH: float = 15.0
@@ -2454,6 +2497,7 @@ def write_matrix(
     run: RunInputs,
     audit_items: Optional[list[AuditItem]] = None,
     leveled_bids: Optional[list[NormalizedBid]] = None,
+    run_id: Optional[str] = None,
 ) -> list[dict]:
     """
     Write normalized bid data into a fresh openpyxl Workbook.
@@ -2461,6 +2505,12 @@ def write_matrix(
     Project identity (title/address/SF basis) is supplied per-run via ``run``
     (RunInputs) — never hardcoded (M1/M2). ``run.gross_sf`` is the confirmed
     $/SF denominator; ``run.sf_basis_label`` labels the $/SF header.
+
+    ``run_id`` is the run identity stamped into the workbook and carried into
+    the run pack so the two are bound (Marvin §10.1). The pipeline mints it at
+    run start and passes it here; a direct/programmatic caller that omits it
+    gets a freshly minted one, so every workbook this function writes is
+    stamped — there is no unstamped path.
 
     Option C writes TWO data sheets:
       * ``Bid_Form`` — the faithful mirror (as-submitted ``bids``), with the
@@ -2474,6 +2524,7 @@ def write_matrix(
     """
     output_path = Path(output_path)
     gsf = int(run.gross_sf)
+    run_id = run_id or mint_run_id()
 
     # Step 1: Sort bids (leveled-total ascending). The leveled bids are sorted by
     # the SAME order as the mirror so the two sheets line up cell-for-cell.
@@ -2512,9 +2563,10 @@ def write_matrix(
     if audit_items:
         _write_audit_sheet(wb, audit_items)
 
-    # Step 9: Stamp producer/format-version (invisible custom doc properties —
-    # the scorecard's SUPPORTED_PRODUCER check reads this; verdict f) + save
-    _stamp_workbook(wb)
+    # Step 9: Stamp producer/format-version/run-id/project-identity (invisible
+    # custom doc properties — the scorecard's SUPPORTED_PRODUCER check reads
+    # this (verdict f) and the run pack binds against it (P1-4 §8.3)) + save
+    _stamp_workbook(wb, run, run_id)
     wb.save(output_path)
     print(f"  [write_matrix] Saved fresh workbook → {output_path}")
     print(f"  [write_matrix] Sheet dimensions: "

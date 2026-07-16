@@ -180,9 +180,12 @@ def test_pipeline_ranks_four_bidders_with_supplied_basis_band_and_name(tmp_path)
     for name, _total, tier in SYNTH_BIDDERS:
         assert by_name[name]["tier"] == tier, (name, by_name[name]["tier"])
 
-    # ranking covers all 4, contiguous ranks 1..4
-    ranks = sorted(b["rank"] for b in result["bidders"])
-    assert ranks == [1, 2, 3, 4]
+    # These runs supply no scoring xlsx, so coverage is partial and — under
+    # Marvin's P1-2 ruling — the field carries NO rank and is listed
+    # alphabetically. The whole field still threads through, which is what
+    # these tests are actually about.
+    assert result["full_coverage"] is False
+    assert all("rank" not in b for b in result["bidders"])
     assert len(result["ranking"]) == 4
 
     # the SUPPLIED project name threads into the meta + render context (no

@@ -12,7 +12,11 @@ orients you.
   `band_high`, `modeled_mid_takeoff`, optional `variance_mid`, and the
   presentation labels (`region`, `region_full`, `pricing_year`). The shipped
   config ships these BLANK (null) on purpose, so every project is forced to
-  supply its own via CLI flags or its own `--config` file.
+  supply its own. On a `--inputs` (run pack) run the band comes from the pack's
+  `Baseline` tab and the band flags are refused (exit 2 — one channel per run);
+  on the escape-hatch path it comes from the CLI band flags or the filled
+  `baseline-template.xlsx`. The SF basis is never taken from either file — it is
+  a per-run gate decision on the command line.
 - **Config (tunable model, rarely changed):** tier fractions, the Section C
   volatility/drift coefficients, scoring weights, score anchors, QA
   tolerances, LLM rubric settings, and matrix-parse labels (including

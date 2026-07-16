@@ -29,6 +29,16 @@ FAIL=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 
+# flat <file> — the file as ONE normalized line (blockquote/list markers and
+# markdown emphasis stripped, whitespace collapsed). Prose checks grep THIS:
+# these docs are wrapped prose, and a line-based grep for a phrase breaks the
+# moment the sentence reflows — which is how a gate gets weakened by whoever
+# hits it on a deadline. Normalize, then assert the substance.
+flat() {
+  sed -e 's/^[[:space:]]*>[[:space:]]*//' -e 's/^[[:space:]]*[-*][[:space:]]//' "$1" 2>/dev/null \
+    | tr '\n' ' ' | sed -e 's/[*`_]//g' -e 's/[[:space:]][[:space:]]*/ /g'
+}
+
 echo "=== Phase A: static skill hygiene (create-matrix) ==="
 
 # A1: SKILL.md exists.
@@ -108,6 +118,50 @@ if grep -iqE "waves of at most" "$SKILL_MD" 2>/dev/null \
    && grep -iqE "jitter" "$SKILL_MD" 2>/dev/null; then
   pass "capped-wave + jittered-retry reliability rules present"
 else fail "capped-wave / jittered-retry rules missing"; fi
+
+# ---------------------------------------------------------------------------
+# The scorecard run pack (P1-4, engine Stage 6c). create-matrix is where the
+# operator LEARNS the scoring kit exists — days before scoring, when they can
+# still act on it. If this falls out of the text, the Cowork operator is back
+# to being pointed at templates inside a read-only plugin dir they cannot open.
+# ---------------------------------------------------------------------------
+SKILL_FLAT="$(flat "$SKILL_MD")"
+
+# A13: the pack artifact is named, and handed onward to the scorecard skill.
+if printf '%s' "$SKILL_FLAT" | grep -iq "Scorecard Inputs.xlsx" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "create the Scorecard|build-scorecard" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "do not retype them|do not retype"; then
+  pass "run pack emission documented (artifact named, handed to the scorecard, names not retyped)"
+else fail "Stage-6c run pack not documented (name / hand-off to the scorecard / do-not-retype)"; fi
+
+# A14: the pack must be REPORTED to the user, not just emitted — it belongs in
+#      the Step 4 output report beside the matrix path.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "Scorecard input pack:"; then
+  pass "run pack appears in the Step 4 report format"
+else fail "Step 4 report format does not surface the scorecard input pack"; fi
+
+# A15: no pack on a quarantined (exit-3) run — the operator will ask where
+#      their pack is, and the honest answer must be in the text.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "no pack on a quarantined run|not emitted on an exit-3 run"; then
+  pass "no-pack-on-quarantined-run (exit 3) rule documented"
+else fail "exit-3 no-pack rule missing (operator would be told to hand-build inputs instead)"; fi
+
+# A16: standing-framework honesty — Falke has NO standing framework, so the
+#      skill must not imply the shipped default is their evaluation policy.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "Falke has no such file today|has no standing" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "starting point, not Falke.s evaluation policy"; then
+  pass "standing-framework honesty documented (shipped default is not Falke's policy)"
+else fail "--standing-framework / W8 honesty not documented in SKILL.md"; fi
+
+# A17: partial scoring is allowed (P1-2). The hand-off is where the operator
+#      forms their mental model of what happens next — if it reads as "fill the
+#      whole grid, then run", they will sit on the pack until scoring is done
+#      and never see the provisional card that exists to serve that exact
+#      window.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "don.t have to finish the scoring|do not have to finish the scoring" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "PROVISIONAL"; then
+  pass "pack hand-off tells the operator partial scoring renders a provisional card"
+else fail "create-matrix does not tell the operator they can score partially (P1-2)"; fi
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then

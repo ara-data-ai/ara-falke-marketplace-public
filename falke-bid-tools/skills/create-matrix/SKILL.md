@@ -10,7 +10,10 @@ description: >-
   contractor is cheapest", "create the matrix", "run the matrix", or "build the
   bid comparison". The skill PROMPTS for / confirms the per-run project identity
   (name, address, gross SF) and ENFORCES an SF-basis confirmation gate — the
-  pipeline hard-stops (exit 2) without a confirmed $/SF denominator.
+  pipeline hard-stops (exit 2) without a confirmed $/SF denominator. Every clean
+  run also emits a "<Project> - Scorecard Inputs.xlsx" run pack beside the
+  matrix — the scoring kit for /build-scorecard, with the bidder names already
+  filled in — and the skill reports it as the next step.
 argument-hint: "[bid-file ...] or [source-directory]"
 disable-model-invocation: false
 allowed-tools: Read, Write, Glob, Bash(ls *), Bash(mktemp *), Bash(mkdir *), Bash(cp *), Bash(*/venv/bin/python -c *), Bash(* -m src.pipeline *)
@@ -669,7 +672,70 @@ denominator. Capture the full stdout. The pipeline runs these stages:
 8b. Post-write tie-out self-check (engine Stage 6b) — re-reads the saved xlsx
    and verifies it against the validated inputs; any failure LOUD-QUARANTINES
    the affected figures and exits 3 (see *Handle exit 3* below)
+8c. Scorecard run pack (engine Stage 6c) — writes `<Project> - Scorecard
+   Inputs.xlsx` beside the matrix (see *The scorecard run pack* below)
 9. Print summary report
+
+### The scorecard run pack (Stage 6c) — REPORT IT, it is the next step
+
+On every clean run the engine writes a second artifact next to the matrix:
+
+```
+<Project> - Scorecard Inputs.xlsx
+```
+
+This is **the scoring kit for `/build-scorecard`**, and telling the operator
+about it here is the point: they learn about the scoring inputs at the END OF
+THE MATRIX RUN — days before scoring, while they can still act on it — instead
+of at step 5 of a scorecard conversation. It carries four tabs (`Settings` /
+`Baseline` / `Framework` / `Scores`) with **the bidder names, the project
+identity, the SF echo and the starting framework already filled in from this
+run**. Falke fills in the baseline band + trade lines and the 1–10 scores
+offline, then brings that ONE file to the scorecard as `--inputs`. It replaces
+what used to be three separate template uploads, and because the firm names come
+from the pipeline rather than a human's typing, the whole
+firm-name-mismatch failure class goes away.
+
+**Report it in Step 4 with the output file, and say plainly:**
+
+> Your scorecard input pack is at `<path>`. Fill in the **Baseline** tab (the
+> band and the trade lines) and the **Scores** grid (1–10 per category), plus
+> the bid-opening date on **Settings** — the firm names are already in it, do
+> not retype them. When you're ready to score, bring that one file to "create
+> the Scorecard".
+>
+> You don't have to finish the scoring first: score what you know and leave the
+> rest blank, and the scorecard renders a PROVISIONAL card — the full price
+> picture, with the ranking withheld until the evaluation is complete. Re-run it
+> as the grid fills up.
+
+Two rules that must not be softened:
+
+- **No pack on a quarantined run (exit 3).** That workbook failed the
+  producer's own self-check and carries a "verify the flagged figures" banner —
+  handing over a scoring kit for it would invite scoring a workbook the producer
+  has disowned. Fix the matrix, re-run, get a pack. If the operator asks where
+  their pack is after an exit-3 run, that is the honest answer.
+- **Do not edit the pack's producer-filled cells for them** (the `Firm` column,
+  the identity/stamp rows on `Settings`, the `Matrix Exclusions` block). The
+  scorecard re-derives those from the matrix and hard-stops on a mismatch.
+
+### The standing evaluation framework (`--standing-framework`) — optional, and Falke has none
+
+The engine takes an optional `--standing-framework <standing-framework.xlsx>`
+(sheet `Standing_Framework`: a Version + Effective Date block and the framework
+rows). **Falke has no such file today**, so every run today takes the bootstrap
+path: the pack's `Framework` tab is pre-filled with ARA's shipped default as
+**starting content**, the pack records `Standing Framework Version = none
+(shipped default)`, and the engine prints a NOTE saying so. Downstream, the
+scorecard's weights-drift check WARNs and the card states that no standing
+framework was on file — it claims nothing more.
+
+Relay that honestly if it comes up: ARA's shipped default is a **starting
+point, not Falke's evaluation policy**, and no drift control is protecting them
+until Falke adopts a versioned, dated standing framework of their own. Do not
+go looking for a standing framework file by convention — the path is explicit or
+there is none.
 
 ### Exit-code contract (v2)
 
@@ -871,10 +937,15 @@ Report both; never merge them.)
 
 ---
 
-### Output File
+### Output Files
 
 <the --out path you passed in Step 3>
 File size: <size>
+
+Scorecard input pack: <the "<Project> - Scorecard Inputs.xlsx" path from
+Stage 6c> — fill in the Baseline tab, the Scores grid, and the bid-opening
+date on Settings, then bring this ONE file to "create the Scorecard". The firm
+names are already in it; do not retype them. (Not emitted on an exit-3 run.)
 
 The workbook has three sheets:
 - **Leveled_Normalized** — the leveled comparison where the award math lives.

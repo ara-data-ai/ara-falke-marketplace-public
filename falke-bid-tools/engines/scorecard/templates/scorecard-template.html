@@ -444,10 +444,131 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
   border-top: 1px solid var(--rule);
   padding-top: 6px;
 }
+
+/* ---------------------------------------------------------------------------
+   PRELIMINARY WATERMARK (P1-1, exit-contract v2 / Floyd verdict (e) + C-R12)
+   ---------------------------------------------------------------------------
+   Renders ONLY when the run is not deliverable (audit blocker, audit skipped,
+   or provisional scoring). A clean run has no watermark node in the DOM at all.
+
+   THE THREAT IS A SCREENSHOT. An exit code does not survive being pasted into
+   an email; a board packet gets screenshotted, printed and forwarded, and at
+   that moment the pixels are the only thing left. So the disclosure has to be
+   ON THE ARTIFACT, and it has to be on EVERY page — a reader who screenshots
+   page 3 must see it too.
+
+   TWO LAYERS, and this block styles only the second:
+     1. THE TILING DIAGONAL — the control. It is not defined here: it is
+        injected as a root-element background further down, in the
+        watermark-conditional style block, where the ONE explanation of how and
+        why it works also lives. Do not restate it here.
+     2. .prelim-banner (below) — a solid band at the top of page 1, in the
+        reading path before any number, carrying what the reader should DO
+        about each reason. It CROPS OFF; that is precisely why it is support
+        and not the control. Marvin (P1-2 §2.4): "A badge is a caveat wearing a
+        watermark's costume; it crops off with the header."
+
+   And note the ordering Marvin insists on, which this file does NOT quietly
+   invert: for P1-2's provisional case the FIRST control is that the claim is
+   absent — no rank, no leader, no Overall to crop. The watermark is the third
+   control. It supports that subtraction; it never substitutes for it.
+
+   The banner is print-safe: -webkit-print-color-adjust:exact keeps the fill
+   when the PDF is generated (Anna §2 — print_background is already on).
+--------------------------------------------------------------------------- */
+/* "Listed alphabetically — not ranked." (P1-2 §3.3.3). Sits directly above the
+   bid table, because an order with no stated basis invites the top row to be
+   read as the leader — announcing the absence of a claim is half the control. */
+.listing-note {
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: #B3261E;
+  margin: 0 0 6px;
+}
+/* The coverage worklist (P1-2 §2.3) — what is left to do. This is the reason a
+   precon lead renders a provisional card at all. */
+.worklist {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+.worklist h4 {
+  margin: 0 0 4px;
+  font-size: var(--fs-small);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.worklist .headline { font-size: var(--fs-td); font-weight: 700; margin-bottom: 4px; }
+.worklist ul { margin: 0; padding-left: 16px; }
+.worklist li { font-size: var(--fs-td); margin-bottom: 1px; }
+
+.prelim-banner {
+  background: #B3261E;
+  color: #FFFFFF;
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  page-break-inside: avoid;
+}
+.prelim-banner .prelim-title {
+  font-family: var(--font-head, inherit);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.prelim-banner ul { margin: 0; padding-left: 16px; }
+.prelim-banner li { font-size: var(--fs-small); margin-bottom: 1px; }
+.prelim-banner li:last-child { margin-bottom: 0; }
+
 </style>
+
+{#
+  The tiling watermark layer. Injected ONLY on a watermarked run, so a clean
+  card carries no watermark CSS at all and stays byte-identical to before.
+
+  It rides on the ROOT element because that is the only layer Chromium paints on
+  EVERY printed page — a `position: fixed` diagonal renders on page 1 and no
+  other, which I verified on a real 4-page PDF before writing this. `body` is
+  made transparent so the root canvas shows through: the shared `html, body`
+  rule above paints both `var(--paper)`, and an opaque body would hide the mark
+  on every page including the first.
+#}
+{% if watermark %}
+<style>
+html {
+  background-image: url("{{ watermark_bg }}");
+  background-repeat: repeat;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+body { background: transparent; }
+</style>
+{% endif %}
 </head>
 
 <body>
+
+<!-- ======================= PRELIMINARY WATERMARK ========================== -->
+<!--
+  Data-driven: the whole block is absent from a clean run's DOM. `watermark` is
+  a LIST of reasons (exit_codes.resolve_watermark) because the states compose —
+  an unaudited provisional run is both, and saying only one would be the card
+  staying quiet about something it knows.
+-->
+{% if watermark %}
+<div class="prelim-banner">
+  <div class="prelim-title">{{ watermark_headline }}</div>
+  <ul>
+    {% for r in watermark %}<li>{{ r.detail }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
 
 <!-- ========================== HEADER BAND ================================= -->
 <!--
@@ -529,6 +650,7 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
 <!-- ================== SECTION B — Bid Totals Normalized ================== -->
 <div class="section">
   <h2 class="section-title">{{ section_b_title }}</h2>
+  {% if listing_note %}<div class="listing-note">{{ listing_note }}</div>{% endif %}
   <table class="sc">
     <colgroup>
       <col style="width:14%"><col style="width:13%"><col style="width:9%">
@@ -558,6 +680,25 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
     </tbody>
   </table>
 </div>
+
+<!-- ================= COVERAGE WORKLIST (provisional runs) ================ -->
+<!--
+  Renders ONLY when the evaluation is incomplete. Not a caveat — a TASK LIST.
+  It is what makes the honest path the useful path: the operator renders the
+  provisional card and immediately sees what is outstanding, instead of
+  squinting at the grid to work it out.
+-->
+{% if not full_coverage and coverage %}
+<div class="section">
+  <div class="worklist">
+    <h4>Scoring progress</h4>
+    <div class="headline">{{ coverage.headline }}</div>
+    <ul>
+      {% for c in coverage.per_bidder %}<li>{{ c.name }} — {{ c.scored }} of {{ c.total }} scored{% if c.outstanding %}, {{ c.outstanding }} outstanding{% endif %} ({{ c.coverage_pct }}% of weight)</li>{% endfor %}
+    </ul>
+  </div>
+</div>
+{% endif %}
 
 <!-- =============== SECTION C — Probability-Adjusted Outcome ============== -->
 <div class="section">
@@ -661,7 +802,7 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
   <!-- REPEAT:contractor -->
   {% for c in contractor_summaries %}
   <div class="contractor">
-    <div class="name">{{ c.name }} (Rank #{{ c.rank }})</div>
+    <div class="name">{{ c.name }}{% if c.rank %} (Rank #{{ c.rank }}){% endif %}</div>
     <div class="split">
       <div class="pane strengths">
         <h4>Strengths</h4>
@@ -686,6 +827,12 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
 </div>
 
 <!-- ==================== SECTION G — Final Hierarchy ===================== -->
+<!--
+  THE RANKING ITSELF. At partial coverage hierarchy_items is empty and the whole
+  section is skipped (Marvin P1-2 §3.3.2: the rank is ABSENT, not blank) — an
+  empty heading would only invite the reader to wonder what was removed.
+-->
+{% if hierarchy_items %}
 <div class="section">
   <h2 class="section-title">{{ section_g_title }}</h2>
   <div class="hierarchy-bar">
@@ -694,6 +841,7 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
     <!-- /REPEAT:hierarchy_item -->
   </div>
 </div>
+{% endif %}
 
 <!-- ==================== SECTION H — Disclosures & Data Notes ==============
   Board-facing material disclosures the run produces. Driven by data: each note
@@ -730,10 +878,16 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
       </ul>
     </div>
     {% endif %}
+    {% if disclosures.framework_basis %}
+    <div class="note">
+      <h4>Evaluation framework</h4>
+      <p>{{ disclosures.framework_basis }}</p>
+    </div>
+    {% endif %}
     {% if disclosures.provisional %}
     <div class="note">
-      <h4>Provisional scores</h4>
-      <p>The Overall column is an honest weighted average. These bidders are scored at partial qualitative coverage — their rank position is provisional accordingly:</p>
+      <h4>Evaluation incomplete</h4>
+      <p>The qualitative evaluation is still in progress, so this card does not rank the field, name a leader, or print an Overall score. Bidders are listed alphabetically. Scoring stands as follows:</p>
       <ul>
         {% for p in disclosures.provisional %}<li>{{ p.name }} ({{ p.coverage }} qualitative coverage)</li>{% endfor %}
       </ul>

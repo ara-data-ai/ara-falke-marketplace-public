@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from .exit_codes import watermark_headline
 from .mechanical import (TIER_DEFENSIVE, TIER_LABELS, TIER_MID, TIER_PREMIUM,
                          TIER_RISK, TIER_TOP)
 
@@ -56,7 +57,7 @@ def _bidder_by_name(result: Dict, name: str) -> Dict:
     return next(b for b in result["bidders"] if b["name"] == name)
 
 
-def _winner_rationale(w: Dict, *, provisional: bool, close_call: bool,
+def _winner_rationale(w: Dict, *, close_call: bool,
                       r2: Optional[Dict]) -> str:
     """The 'why', keyed to tier (rubric §3). RISK gets the guardrail framing
     (no celebration); close-call names both leaders; provisional softens the
@@ -129,15 +130,6 @@ def _winner_rationale(w: Dict, *, provisional: bool, close_call: bool,
             f"qualifications are weighed together."
         )
 
-    # Provisional: downgrade certainty — current front-runner on a provisional
-    # score, not a settled recommendation (rubric §2b).
-    if provisional:
-        why = (
-            f"On the qualitative review completed so far, {why} "
-            f"Because that review is not yet finished, treat this as the "
-            f"current front-runner on a provisional score rather than a settled "
-            f"recommendation — the ranking could still shift."
-        )
     return why
 
 
@@ -214,9 +206,10 @@ def _sf_basis_text(result: Dict) -> str:
 def _build_caveats(result: Dict) -> List[str]:
     """The board-facing disclosures (rubric §6). Order: baseline provenance (a),
     provisional coverage (b, conditional), judgment (c), informs-not-decides
-    (d), no-legal-advice (e), consumed-sheet disclosure (f, when the run
-    recorded one). (a),(c),(d),(e) are ALWAYS present; a conflict-of-interest
-    line is NOT speculated here (rubric §6 only adds it on a real signal)."""
+    (d), no-legal-advice (e), framework-basis declaration (f, when the run used
+    a pack), consumed-sheet disclosure (g, when the run recorded one).
+    (a),(c),(d),(e) are ALWAYS present; a conflict-of-interest line is NOT
+    speculated here (rubric §6 only adds it on a real signal)."""
     caveats: List[str] = []
 
     # (a) ALWAYS — baseline provenance, stated NEUTRALLY (P0-5): the tool
@@ -276,7 +269,20 @@ def _build_caveats(result: Dict) -> List[str]:
         "association's attorney."
     )
 
-    # (f) consumed-sheet disclosure (Marvin P0-7): the same line the card
+    # (f) framework-basis declaration (Marvin §4.5; Floyd C-1): the SAME line
+    # the card carries — imported, never re-worded. F1 was three mutually
+    # contradictory hard-coded claims about one fact, and the way you get three
+    # is by writing the sentence in three places. One function, one text.
+    #
+    # The summary is a board-facing artifact in its own right; a post-opening
+    # re-weighting disclosed on the card but not here would be a packet whose
+    # two human-readable documents disagree about what the board must weigh.
+    from .render import build_framework_basis_note
+    framework_note = build_framework_basis_note(result)
+    if framework_note:
+        caveats.append(framework_note)
+
+    # (g) consumed-sheet disclosure (Marvin P0-7): the same line the card
     # carries, so the summary travels with its own provenance too.
     sheet = result.get("sheet") or {}
     if sheet.get("disclosure"):
@@ -284,7 +290,7 @@ def _build_caveats(result: Dict) -> List[str]:
     return caveats
 
 
-def _bottom_line(w: Dict, *, provisional: bool, close_call: bool,
+def _bottom_line(w: Dict, *, close_call: bool,
                  r2: Optional[Dict]) -> str:
     """The one-sentence bottom line, selected by winner certainty (rubric §7)."""
     name = w["name"]
@@ -303,12 +309,6 @@ def _bottom_line(w: Dict, *, provisional: bool, close_call: bool,
             f"defensible best-value picks, and the choice comes down to the "
             f"qualitative differences noted below."
         )
-    if provisional:
-        return (
-            f"{name} is the current front-runner at {money}, on a provisional "
-            f"score — we recommend confirming the remaining qualitative review "
-            f"before the board treats this as final."
-        )
     if tier in (TIER_DEFENSIVE, TIER_PREMIUM):
         return (
             f"we recommend {name} at {money} — not the cheapest, but the "
@@ -323,16 +323,83 @@ def _bottom_line(w: Dict, *, provisional: bool, close_call: bool,
     )
 
 
-def build_summary_context(result: Dict) -> Dict:
+def _watermark_bg(watermark: Optional[List[Dict]]) -> str:
+    """The same tiled mark the card carries — one generator, one appearance.
+    Imported lazily so summary.py keeps its no-render-dependency import path."""
+    if not watermark:
+        return ""
+    from .render import watermark_background_uri
+    return watermark_background_uri(
+        watermark_headline(watermark), [r["token"] for r in watermark])
+
+
+def build_summary_context(result: Dict, *,
+                          watermark: Optional[List[Dict]] = None) -> Dict:
     """Derive Anna's summary context object from the pipeline `result` dict.
 
     `result` is exactly what `pipeline.run_scorecard()` returns. We reuse its
     already-computed fields (ranking, per-bidder tier/total/per_sf/overall,
     full_coverage, overall_label, fingerprints, meta) — nothing is recomputed.
+
+    `watermark` is the same reason list the card carries (P1-1). The summary
+    travels on its own, so it must disclose its own status: a card stamped
+    PRELIMINARY beside a clean-looking summary is a packet whose two documents
+    disagree about whether it is deliverable.
     """
-    ranking = result["ranking"]  # rank-sorted 1..N by the pipeline
-    if not ranking:
-        raise ValueError("Cannot build a summary: the run produced no ranked bidders.")
+    ranking = result["ranking"]   # rank-sorted 1..N, or alphabetical+unranked
+    # The guard keys on BIDDERS, not on ranking (Marvin §3.4): under this ruling
+    # a provisional run legitimately has no ranking, so the old
+    # "no ranked bidders" guard would refuse to build the very document the
+    # ruling exists to produce.
+    if not result.get("bidders"):
+        raise ValueError("Cannot build a summary: the run produced no bidders.")
+
+    full_coverage = bool(result.get("full_coverage", False))
+
+    # ---- AT PARTIAL COVERAGE THIS IS A DIFFERENT DOCUMENT ------------------
+    # Not a hedged version of the same one (Marvin §3.4). The old code softened:
+    # it named a front-runner and then disclaimed it. That is F2's shape — prose
+    # telling the board the curve did not change who ranks where while the curve
+    # changed who ranks where. A FRONT-RUNNER IS A RANKING CLAIM; softening the
+    # sentence around it does not unmake it.
+    #
+    # And the softening was at its most confident exactly when the evidence was
+    # thinnest: the close-call hedge needs TWO Overall numbers to fire, so at
+    # zero coverage there were none, `close_call` stayed False, and
+    # _winner_rationale took its "Clear winner, by tier" branch. The certainty of
+    # the language was inversely proportional to the evidence behind it.
+    #
+    # So the winner/rationale/runners-up path is not entered at all here. This
+    # branch REMOVES claims; it does not add a mode.
+    if not full_coverage:
+        cov = result.get("coverage") or {}
+        return {
+            "project_name": result["meta"]["project_name"],
+            "status_header": "EVALUATION IN PROGRESS — no recommendation yet",
+            "winner_name": "",
+            "winner_rationale": "",
+            "ranked_bidders": [
+                {"rank": "", "name": b["name"], "tier": _tier_label(b["tier"]),
+                 "overall": b["overall"]["display"]}
+                for b in sorted(result["bidders"], key=lambda x: x["name"].lower())
+            ],
+            "listing_note": ("Listed alphabetically — not ranked. Ranking "
+                             "requires a complete qualitative record."),
+            "coverage": cov,
+            "full_coverage": False,
+            "runners_up_note": "",
+            "methodology_plain": _methodology_plain(_sf_basis_text(result)),
+            "caveats": _build_caveats(result),
+            "bottom_line": (
+                f"the qualitative evaluation is not finished — {cov.get('headline', '')} "
+                f"Until it is, this is a working document: it reports the price "
+                f"picture, which is complete, and it does not rank the field or "
+                f"name a leader."),
+            "watermark": watermark or [],
+            "watermark_headline": watermark_headline(watermark or []),
+            "watermark_bg": _watermark_bg(watermark),
+            "footer_note": result["meta"]["footer_note"],
+        }
 
     winner_name = ranking[0]["name"]
     w = _bidder_by_name(result, winner_name)
@@ -346,8 +413,6 @@ def build_summary_context(result: Dict) -> Dict:
         if o1 is not None and o2 is not None:
             close_call = (o1 - o2) < CLOSE_CALL_GAP
 
-    provisional = not bool(result.get("full_coverage", False))
-
     ranked_bidders = [
         {
             "rank": r["rank"],
@@ -360,14 +425,23 @@ def build_summary_context(result: Dict) -> Dict:
 
     return {
         "project_name": result["meta"]["project_name"],
+        "status_header": "",
+        "listing_note": "",
+        "coverage": result.get("coverage") or {},
+        "full_coverage": True,
         "winner_name": winner_name,
         "winner_rationale": _winner_rationale(
-            w, provisional=provisional, close_call=close_call, r2=r2),
+            w, close_call=close_call, r2=r2),
         "ranked_bidders": ranked_bidders,
         "runners_up_note": _runners_up_note(result, ranking),
         "methodology_plain": _methodology_plain(_sf_basis_text(result)),
         "caveats": _build_caveats(result),
+        # PRELIMINARY watermark (P1-1) — same mechanism, same reason list as the
+        # card. Empty list = clean run = no mark.
+        "watermark": watermark or [],
+        "watermark_headline": watermark_headline(watermark or []),
+        "watermark_bg": _watermark_bg(watermark),
         "bottom_line": _bottom_line(
-            w, provisional=provisional, close_call=close_call, r2=r2),
+            w, close_call=close_call, r2=r2),
         "footer_note": result["meta"].get("footer_note", ""),
     }

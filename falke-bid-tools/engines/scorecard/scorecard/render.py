@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import os
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 from .config import Config
 from .errors import RenderError
+from .exit_codes import watermark_headline
 from .mechanical import TIER_CSS, TIER_LABELS
 
 TEMPLATE_DIR = os.path.join(
@@ -44,8 +46,17 @@ def fmt_money(v: float) -> str:
 
 
 def fmt_score_cell(score) -> str:
-    """1-10 cell; None -> the analyst flag marker."""
-    return str(score) if score is not None else "—*"
+    """1-10 cell; NOT YET SCORED -> a visibly EMPTY cell.
+
+    It used to render "—*". Marvin P1-2 §2.3 is explicit that blanks must be
+    "visibly blank (not 0, not — in a way that reads as a value)" — and he is
+    right that a dash-plus-asterisk is a value: it sits in the column looking
+    like a score of some kind, and a reader scanning the grid cannot tell it
+    from a real mark without hunting for the legend. An empty cell is
+    unambiguous, and the row's own Overall cell carries the count of what is
+    outstanding.
+    """
+    return str(score) if score is not None else ""
 
 
 # Internal placeholder marker used in EXAMPLE qualitative-note inputs to show the
@@ -126,6 +137,14 @@ def build_disclosures(result: Dict, cfg: Config) -> Dict:
         if b["overall"].get("coverage", 1.0) < 0.999
     ]
 
+    # (e) Framework basis: how the evaluation PLAN was set, RENDERED FROM THE
+    # DECLARATION — never hard-coded. That is F1's lesson, which cost a P0 to
+    # learn: three unconditional, mutually contradictory claims about one
+    # empirical fact shipped on a board document because the language was baked
+    # into the template instead of keyed to a declared input. So: the tool says
+    # only what the owner declared, and when nothing was declared it says nothing.
+    framework_basis = build_framework_basis_note(result)
+
     return {
         "completeness": completeness,
         "div_band_low": DIV_BAND[0],
@@ -133,9 +152,206 @@ def build_disclosures(result: Dict, cfg: Config) -> Dict:
         "duplicates": duplicates,
         "fingerprints": fingerprints,
         "provisional": provisional,
+        "framework_basis": framework_basis,
         # convenience flag: render the section only if SOMETHING needs surfacing
-        "any": bool(completeness or duplicates or fingerprints or provisional),
+        "any": bool(completeness or duplicates or fingerprints or provisional
+                    or framework_basis),
     }
+
+
+def watermark_background_uri(headline: str, tokens: List[str]) -> str:
+    """A tiled, rotated SVG data URI — the watermark layer that reaches EVERY page.
+
+    THIS IS THE CONTROL, and the mechanism is not cosmetic preference (Marvin
+    P1-2 §2.4: "a page-wide diagonal watermark on every page, not a header
+    badge. A badge is a caveat wearing a watermark's costume; it crops off with
+    the header.").
+
+    The obvious implementation — a `position: fixed` diagonal — DOES NOT WORK,
+    and it fails silently in the worst possible direction. I built it that way
+    first and drove a real 4-page PDF through Chrome: PRELIMINARY appeared on
+    page 1 and on no other page. It looked right in the HTML, it looked right on
+    page 1 of the PDF, and pages 2-4 were clean-looking board content. That is
+    precisely the artifact this item exists to prevent, produced by the control
+    meant to prevent it.
+
+    What does work, verified the same way: a repeating background-image on the
+    ROOT element. Chromium propagates the root background to the page canvas and
+    paints it on every printed page. So the mark tiles down the whole document,
+    several per page — which also means no single crop removes it.
+
+    The tile carries the composed headline itself, not just the word: the
+    diagonal is the layer that survives, so it has to say WHY, not merely that.
+
+    ON THE OPACITY. It is tuned against a REAL rendered page, not by taste. The
+    card is panel-dense — Sections F/H carry opaque fills — so the mark is
+    occluded wherever a panel sits and only reads in the gaps between them. A
+    wash faint enough to be tasteful is a wash a reader can miss on a busy page,
+    and "the reader had to hunt for it" fails the only test that matters here:
+    is the card safe when read WRONG? So it is pitched to be unmissable in the
+    gaps while staying legible-through — checked page by page on a 4-page PDF.
+    """
+    tokens_line = " · ".join(tokens).upper()
+    # Escaped for XML, then percent-encoded for the data URI. Both matter: firm
+    # names never reach here, but the tokens are ours and & would still break it.
+    def esc(s: str) -> str:
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;").replace('"', "&quot;"))
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="620" height="260">'
+        '<g transform="rotate(-24 310 130)">'
+        '<text x="310" y="126" text-anchor="middle" '
+        'font-family="Helvetica,Arial,sans-serif" font-size="58" '
+        'font-weight="bold" fill="rgba(179,38,30,0.28)">PRELIMINARY</text>'
+        f'<text x="310" y="158" text-anchor="middle" '
+        'font-family="Helvetica,Arial,sans-serif" font-size="19" '
+        'font-weight="bold" letter-spacing="2" '
+        f'fill="rgba(179,38,30,0.34)">{esc(tokens_line)}</text>'
+        '</g></svg>'
+    )
+    return "data:image/svg+xml;charset=utf-8," + quote(svg)
+
+
+def _terminated(text: str) -> str:
+    """End a free-text operator note with a sentence terminator (Floyd F-4).
+
+    The ruling note is interpolated mid-paragraph on the card's most sensitive
+    line, so an operator who omits the final period produces
+    "…on 2026-06-10 Weights set after bid opening…" — two sentences run
+    together on the one line the board is meant to weigh most carefully.
+    """
+    stripped = str(text or "").strip()
+    if not stripped:
+        return ""
+    return stripped if stripped[-1] in ".!?" else stripped + "."
+
+
+def build_framework_basis_note(result: Dict) -> str:
+    """The framework-basis disclosure (Marvin §4.5) — the card AND the summary.
+
+    TWO INDEPENDENT FACTS, COMPOSED — never one substituted for the other
+    (Floyd C-1, 2026-07-16). This function previously returned early on the W8
+    branch and swallowed the operator's declaration with it. Because Falke has
+    no standing framework on file, W8 fires on EVERY run today — so an operator
+    who did the honest thing and declared a post-opening re-weighting got a
+    board packet in which that fact appeared in no human-readable artifact.
+    That is the F1 failure class the whole P0 program existed to close: the card
+    silent about something it knows. Worse, it punished precisely the operator
+    the declaration model exists to reward.
+
+      1. The standing-framework CLAIM is CONDITIONAL. Without a reference on
+         file the card must not claim one exists — it cannot say what it does
+         not know.
+      2. The operator's own DECLARATION is NOT conditional. It has nothing to
+         do with the missing reference, and `revised-post-opening` is ruled
+         "mandatory, unconditional, on the card."
+
+    The two are independent and both get said. The only reason `standing` and
+    `project-specific` stay silent under W8 is that their §4.5 texts each
+    ASSERT something about the standing framework ("applied unmodified", "they
+    differ from Falke's standing framework") and neither sentence can be said
+    without one. `revised-post-opening` references no standing framework at all,
+    so it composes cleanly and always renders.
+    """
+    pack = result.get("pack")
+    if pack is None:
+        return ""
+
+    parts = []
+    # (1) the conditional standing-framework claim
+    if not pack.standing_available:
+        parts.append("No standing evaluation framework was on file for this "
+                     "run; the categories and weights below were supplied for "
+                     "this project.")
+    # (2) the operator's declaration — independent of (1)
+    parts.append(_declaration_sentence(pack))
+    return " ".join(p for p in parts if p)
+
+
+def _declaration_sentence(pack) -> str:
+    """The §4.5 text for the declared basis, suppressed CLAUSE BY CLAUSE.
+
+    Floyd's governing rule (C-3, 2026-07-16), verbatim:
+
+        Suppress only clauses that assert a fact the tool does not have. Never
+        suppress a clause that carries a fact the operator declared. Clause
+        level, not branch level.
+
+    My first pass applied it at BRANCH level and dropped `project-specific`
+    whole when no standing framework was on file. Wrong, for three reasons
+    worth keeping written down:
+
+      * The W8 sentence is BASIS-INDEPENDENT — it renders identically for
+        `standing` and `project-specific` — so it cannot be carrying the
+        declaration's substance. "Supplied for this project" speaks to the
+        provenance of the CONTENT; the two-clock doctrine is entirely about
+        WHEN, and the lock date is the only thing that says when.
+      * W3 is a BLOCKER keyed on the lock date. Auditing a date and then
+        omitting it from the artifact the audit protects is incoherent.
+      * Bias: if the adverse declaration composes and the favourable one does
+        not, the card only ever speaks when there is bad news — which makes its
+        silence ambiguous rather than reassuring.
+
+    Applying the rule to each branch's clauses:
+
+    | branch                | clause                          | W8 disposition |
+    |-----------------------|---------------------------------|----------------|
+    | standing              | "is Falke's standing framework, | SUPPRESS — the |
+    |                       |  applied unmodified"            | whole text is  |
+    |                       |                                 | the claim      |
+    | project-specific      | "locked on <date>, before bids  | RENDER —       |
+    |                       |  were opened"                   | operator fact  |
+    |                       | "they differ from Falke's       | SUPPRESS —     |
+    |                       |  standing framework"            | compares to    |
+    |                       |                                 | nothing        |
+    |                       | "recorded in the award file"    | RENDER         |
+    | revised-post-opening  | (all clauses)                   | RENDER — makes |
+    |                       |                                 | no claim about |
+    |                       |                                 | a standing fw  |
+    """
+    basis = pack.framework_basis
+    has_standing = pack.standing_available
+
+    # MANDATORY, UNCONDITIONAL, ON THE CARD (§4.5). Every clause is
+    # operator-declared and none references a standing framework, so the whole
+    # text survives W8. This is THE risk disclosure of the declaration model.
+    if basis == "revised-post-opening":
+        return (f"Evaluation categories and weights were revised after bids "
+                f"were opened. {_terminated(pack.framework_ruling_note)} "
+                f"Weights set after bid opening are disclosed here so the "
+                f"board can weigh them accordingly.")
+
+    if basis == "project-specific":
+        if has_standing:
+            return (f"Evaluation categories and weights were set for this "
+                    f"project and locked on {pack.framework_lock_date}, before "
+                    f"bids were opened. They differ from Falke's standing "
+                    f"framework; the ruling is recorded in the award file.")
+        # W8: the lock date and the pre-opening claim RENDER; the "differ from"
+        # comparison does not (there is nothing on file to differ from); the
+        # award-file pointer does.
+        #
+        # Wording note: the naive composition stutters — the W8 sentence
+        # already said "supplied for this project", so leading with "set for
+        # this project" repeats it and buries the one fact this clause exists
+        # to carry, which is WHEN. So it leads with the date. "They" takes its
+        # antecedent from the W8 sentence ("the categories and weights below"),
+        # which build_framework_basis_note always emits immediately before this
+        # under W8 — if that order ever changes, this pronoun dangles.
+        return (f"They were locked on {pack.framework_lock_date}, before bids "
+                f"were opened; the ruling is recorded in the award file.")
+
+    if basis == "standing":
+        # The entire sentence is a standing-framework claim — "applied
+        # unmodified" relative to WHAT? Suppressed whole, correctly.
+        if not has_standing:
+            return ""
+        return (f"Evaluation categories and weights are Falke's standing "
+                f"evaluation framework (version {pack.standing_version}, "
+                f"effective {pack.standing_effective_date}), applied "
+                f"unmodified.")
+    return ""
 
 
 def render_template(template_file: str, context: Dict) -> str:
@@ -220,21 +436,46 @@ def write_html(html: str, out_html: str) -> str:
     return out_html
 
 
-def build_context(result: Dict, cfg: Config) -> Dict:
+def build_context(result: Dict, cfg: Config, *,
+                  watermark: Optional[List[Dict]] = None) -> Dict:
     """Translate the pipeline result dict into Anna's `context` object.
 
     `result` is the dict produced by pipeline.run_scorecard(): it carries
     project meta, baseline rows, bidder mechanical rows, section C rows, scores,
     ranking, and the overall column.
+
+    `watermark` is exit_codes.resolve_watermark()'s reason list — a LIST, never
+    a boolean (Marvin P1-2 §2.4). Default None = a clean run, and a clean run
+    has no watermark node in the DOM at all. The caller (cli.py) resolves it
+    from the audit verdict, which is why the audit now runs BEFORE the render.
     """
     meta = result["meta"]
-    bidders = result["bidders"]  # ordered as supplied (matrix order)
-    ranking = result["ranking"]  # ordered best->worst
+    bidders = result["bidders"]  # matrix order, or ALPHABETICAL when provisional
+    ranking = result["ranking"]  # best->worst, or alphabetical-and-unranked
+
+    # ---- PROVISIONAL: every ranking claim on this card is withheld ---------
+    # (Marvin P1-2 §3.3). Not softened, not asterisked — ABSENT. There are five
+    # distinct places this card asserts an order, and a caveat in Section H
+    # protects none of them from a phone photo:
+    #   1. the "Top Tier" chip           (names the leaders)
+    #   2. the "Value Tier" chip         (names a rank)
+    #   3. Section C's top-2 row tint    (a rank claim in visual form —
+    #                                     highlighting IS asserting)
+    #   4. Section F's "(Rank #N)"       (per-bidder rank label)
+    #   5. Section G "Final Hierarchy"   (the ranking itself)
+    # Sections A/B/C keep every mechanical fact: the baseline, $/SF, tiers and
+    # variance are fully known regardless of scoring, and suppressing them would
+    # be the tool pretending not to know something it knows — the C-1 error with
+    # the sign flipped. It is also most of what makes the provisional card
+    # genuinely useful, which is what keeps the honest path from being the
+    # useless path.
+    full_coverage = bool(result.get("full_coverage", True))
 
     # ---- summary chips ----
     band = result["baseline"]["band_value"]
-    top2 = [r["name"] for r in ranking[:2]]
-    value_tier = next((r for r in ranking if r["tier"] == "MID"), None)
+    top2 = [r["name"] for r in ranking[:2]] if full_coverage else []
+    value_tier = (next((r for r in ranking if r["tier"] == "MID"), None)
+                  if full_coverage else None)
 
     # ---- Section B ----
     bid_rows = []
@@ -250,7 +491,9 @@ def build_context(result: Dict, cfg: Config) -> Dict:
 
     # ---- Section C ----
     outcome_rows = []
-    best_names = {r["name"] for r in ranking[:2]}
+    # tinting the top two IS a ranking claim, just made in colour rather than
+    # in words — and colour survives a screenshot better than prose does.
+    best_names = {r["name"] for r in ranking[:2]} if full_coverage else set()
     for b in bidders:
         c = b["section_c"]
         outcome_rows.append({
@@ -293,18 +536,24 @@ def build_context(result: Dict, cfg: Config) -> Dict:
                 out.append(cleaned)
         return out
 
+    # Section F survives provisional: strengths/risks are per-bidder FACTS, and
+    # the board-readiness of a fact does not depend on its neighbours. Only the
+    # rank LABEL goes (r has no "rank" key at partial coverage).
     contractor_summaries = []
     for r in ranking:
         contractor_summaries.append({
             "name": r["name"],
-            "rank": r["rank"],
+            "rank": r.get("rank"),
             "strengths": _clean_bullets(r["strengths"]),
             "risks": _clean_bullets(r["risks"]),
         })
 
-    # ---- Section G ----
-    hierarchy_items = [{"n": r["rank"], "name": r["name"], "top3": r["rank"] <= 3}
-                       for r in ranking]
+    # ---- Section G — the Final Hierarchy IS the ranking, so at partial
+    # coverage there is nothing to render. Empty list; the template skips the
+    # whole section rather than printing an empty heading that invites the
+    # reader to wonder what was removed.
+    hierarchy_items = ([{"n": r["rank"], "name": r["name"], "top3": r["rank"] <= 3}
+                        for r in ranking] if full_coverage else [])
 
     return {
         "project_name": meta["project_name"],
@@ -312,12 +561,22 @@ def build_context(result: Dict, cfg: Config) -> Dict:
         "cost_band_label": (f"Modeled Cost Band (Takeoff + "
                             f"{cfg.run.region} trade pricing)"),
         "cost_band_value": band,
-        "top_tier_label": "Top Tier (Takeoff-aligned)",
-        "top_tier_value": " ".join(f"{i+1}) {n}" for i, n in enumerate(top2)),
+        "top_tier_label": ("Top Tier (Takeoff-aligned)" if full_coverage
+                           else "Evaluation status"),
+        "top_tier_value": (" ".join(f"{i+1}) {n}" for i, n in enumerate(top2))
+                           if full_coverage else "In progress — not ranked"),
         "value_tier_label": "Value Tier",
         "value_tier_value": (f"{value_tier['rank']}) {value_tier['name']} "
                              f"(moderate savings, higher volatility)"
                              if value_tier else "—"),
+        # §3.3.3 — alphabetical is the only order that carries no claim, AND
+        # ANNOUNCES that it carries none. Saying so is half the control: an
+        # unexplained order still invites the top row to be read as the leader.
+        "listing_note": ("" if full_coverage else
+                         "Listed alphabetically — not ranked. Ranking requires "
+                         "a complete qualitative record."),
+        "coverage": result.get("coverage") or {},
+        "full_coverage": full_coverage,
         "section_a_title": result["baseline"]["title"],
         "baseline_rows": result["baseline"]["rows"],
         "baseline_subtotals": result["baseline"]["subtotals"],
@@ -344,5 +603,15 @@ def build_context(result: Dict, cfg: Config) -> Dict:
         # consumed-sheet disclosure (Marvin P0-7 ruling): renders on the card
         # UNCONDITIONALLY, in every mode — even a leaked draft carries it.
         "sheet_disclosure": (result.get("sheet") or {}).get("disclosure", ""),
+        # PRELIMINARY watermark (P1-1). Empty list = clean run = no mark, and
+        # no watermark CSS/DOM node at all — a clean card is byte-identical to
+        # what it was before this item.
+        "watermark": watermark or [],
+        "watermark_headline": watermark_headline(watermark or []),
+        "watermark_bg": (
+            watermark_background_uri(
+                watermark_headline(watermark),
+                [r["token"] for r in watermark])
+            if watermark else ""),
         "footer_note": meta["footer_note"],
     }

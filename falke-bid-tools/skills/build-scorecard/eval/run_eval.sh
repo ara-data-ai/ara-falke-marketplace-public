@@ -77,6 +77,22 @@ FAIL=0
 pass() { echo "  PASS  $1"; }
 fail() { echo "  FAIL  $1"; FAIL=$((FAIL+1)); }
 
+# flat <file> — the file as ONE normalized line: markdown emphasis/backticks
+# stripped, whitespace collapsed. Prose checks grep THIS, not the raw file.
+#
+# Why: these docs are wrapped prose. A line-based grep for a phrase like
+# "does not imply --sf-confirmed" fails the moment the sentence wraps or a word
+# is bolded — the RULE is intact, the check breaks. A gate that fails on reflow
+# gets weakened by whoever hits it on a deadline. Normalize, then assert the
+# substance.
+flat() {
+  # strip line-leading blockquote/list markers FIRST (a wrapped blockquote puts
+  # a "> " in the middle of the sentence once newlines collapse), then drop
+  # emphasis/backticks, then join and collapse.
+  sed -e 's/^[[:space:]]*>[[:space:]]*//' -e 's/^[[:space:]]*[-*][[:space:]]//' "$1" 2>/dev/null \
+    | tr '\n' ' ' | sed -e 's/[*`_]//g' -e 's/[[:space:]][[:space:]]*/ /g'
+}
+
 echo "=== Phase A: static skill hygiene ==="
 
 # A1: SKILL.md exists.
@@ -161,12 +177,170 @@ if grep -iq -- "--scoring-framework" "$SKILL_MD" 2>/dev/null \
   pass "scoring-framework + category-scores uploads + no-fallback documented in SKILL.md"
 else fail "scoring-framework / category-scores uploads / no-fallback not documented in SKILL.md"; fi
 
-# A14: scoring flags in the runbook command — the generic command in runbook.md
-#      must carry BOTH --scoring-framework and --category-scores.
+# A14: scoring flags in the runbook command — the escape-hatch command in
+#      runbook.md must carry BOTH --scoring-framework and --category-scores.
 if grep -iq -- "--scoring-framework" "$RUNBOOK_MD" 2>/dev/null \
    && grep -iq -- "--category-scores" "$RUNBOOK_MD" 2>/dev/null; then
   pass "both scoring flags present in runbook.md command"
 else fail "runbook.md missing --scoring-framework / --category-scores"; fi
+
+# ---------------------------------------------------------------------------
+# The run pack (P1-4). The pack is the PRIMARY documented path; these checks
+# gate the four claims the skill text must never lose.
+# ---------------------------------------------------------------------------
+
+# A15: the pack is documented as the normal path, by flag AND by artifact name
+#      (the operator has to be able to ask for the file by name).
+if grep -q -- "--inputs" "$SKILL_MD" 2>/dev/null \
+   && grep -iq "Scorecard Inputs.xlsx" "$SKILL_MD" 2>/dev/null \
+   && grep -q -- "--inputs" "$RUNBOOK_MD" 2>/dev/null; then
+  pass "run pack (--inputs + '<Project> - Scorecard Inputs.xlsx') documented"
+else fail "run pack not documented as the primary path (--inputs / pack filename)"; fi
+
+# A16: PRE-FILLED IS NOT PRE-CONFIRMED (Marvin §5 / Floyd's protected list).
+#      The single most important sentence in the ruling: the pack supplies data,
+#      never a gate decision. If this line ever leaves the skill text, an
+#      operator can be told the pack "handles" the confirmations.
+SKILL_FLAT="$(flat "$SKILL_MD")"
+RUNBOOK_FLAT="$(flat "$RUNBOOK_MD")"
+if printf '%s' "$SKILL_FLAT" | grep -iqE "pre-filled is not pre-confirmed" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "does not imply --sf-confirmed" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "does not imply --baseline-confirmed"; then
+  pass "pre-filled-is-not-pre-confirmed rule documented (both gates survive the pack)"
+else fail "SKILL.md does not state that --inputs implies NEITHER --sf-confirmed NOR --baseline-confirmed"; fi
+
+# A17: one channel per run — the mutual-exclusion rule, in both docs, with the
+#      "edit the pack, don't patch it with a flag" remedy.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "\-\-inputs is mutually exclusive with" \
+   && printf '%s' "$RUNBOOK_FLAT" | grep -iqE "\-\-inputs is mutually exclusive with" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "edits? the pack"; then
+  pass "pack/flag mutual-exclusion rule + edit-the-pack remedy documented"
+else fail "mutual-exclusion rule (--inputs vs the individual flags) not documented in both docs"; fi
+
+# A17b: the BAND flags are in the exclusion list too. Called out separately
+#       because the band is the one pack fact whose flags read like ordinary
+#       run parameters — it is the conflict a reader is most likely to assume
+#       away, and the one that silently re-banded a confirmed card before the
+#       engine enforced it. Both docs must name them.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "\-\-band-low" \
+   && printf '%s' "$RUNBOOK_FLAT" | grep -iqE "\-\-band-low"; then
+  pass "band flags named in the pack mutual-exclusion rule (both docs)"
+else fail "band flags (--band-low/--band-high/--mid) not documented as conflicting with --inputs"; fi
+
+# A18: the escape hatch — legitimate uses named, AND the integrity-smell
+#      question (Marvin §9.3: a named question, never a block).
+if printf '%s' "$SKILL_FLAT" | grep -iqE "escape hatch" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "legacy matrices" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "archival re-render" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "(weren.t|were not) pipeline-originated"; then
+  pass "escape hatch: legitimate uses + integrity-smell question documented"
+else fail "escape-hatch legitimacy rules / integrity-smell question missing from SKILL.md"; fi
+
+# A19: W8 honesty — Falke has NO standing framework, so the runbook must not
+#      imply a drift control exists. Assert the honest disclosure language.
+if grep -iqE "no standing evaluation framework was on file" "$RUNBOOK_MD" 2>/dev/null \
+   && grep -iqE "has no standing evaluation framework|no standing evaluation framework artifact" "$RUNBOOK_MD" 2>/dev/null; then
+  pass "standing-framework W8 honesty documented (no control claimed that doesn't exist)"
+else fail "runbook.md implies a standing-framework drift control Falke does not have"; fi
+
+# A20: no pack on a quarantined (exit-3) matrix — the operator will ask where
+#      their pack is; the answer must be in the text, not invented.
+if grep -iqE "quarantin" "$RUNBOOK_MD" 2>/dev/null \
+   && grep -iqE "no pack|emits.*no pack" "$RUNBOOK_MD" 2>/dev/null; then
+  pass "no-pack-on-quarantined-matrix documented"
+else fail "runbook.md does not explain that a quarantined (exit-3) matrix gets no pack"; fi
+
+# ---------------------------------------------------------------------------
+# EXIT CONTRACT v2 (P1-1) + the PROVISIONAL pathway (P1-2). The exit code is
+# the ONLY thing the skill reads to decide what to tell the operator and
+# whether to offer the email, so the table and the five handlers are contract,
+# not commentary.
+# ---------------------------------------------------------------------------
+
+# A21: all five Handle-exit-N sections exist. Matches the create-matrix idiom.
+MISSING_HANDLERS=""
+for n in 0 1 2 3 4; do
+  printf '%s' "$SKILL_FLAT" | grep -iqE "Handle exit $n" || MISSING_HANDLERS="$MISSING_HANDLERS $n"
+done
+if [ -z "$MISSING_HANDLERS" ]; then
+  pass "Handle-exit-N sections present for 0/1/2/3/4"
+else fail "SKILL.md missing Handle-exit section(s) for:$MISSING_HANDLERS"; fi
+
+# A22: the exit table + precedence. 3 > 4 is the rule an orchestrator gets
+#      wrong by defaulting to "higher number = worse".
+if printf '%s' "$SKILL_FLAT" | grep -iqE "Exit-code contract" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "3 > 4|3 &gt; 4" \
+   && printf '%s' "$RUNBOOK_FLAT" | grep -iqE "3 > 4|3 &gt; 4"; then
+  pass "exit-code contract table + 3>4 precedence documented in both docs"
+else fail "exit table / 3>4 precedence missing from SKILL.md or runbook.md"; fi
+
+# A23: exit 2 keeps the fiduciary framing; exit 1 must NOT borrow it (a typo'd
+#      path is not "the gate working" — saying so trains the operator to
+#      discount the message that matters).
+if printf '%s' "$SKILL_FLAT" | grep -iqE "gate working, not an error"; then
+  pass "exit-2 'gate working, not an error' framing present"
+else fail "exit-2 fiduciary framing missing from SKILL.md"; fi
+
+# A24: THE EMAIL SUPPRESSION (Marvin §6). The email is the one mechanism that
+#      pushes the document OUTWARD; offering it on a provisional run is the
+#      tool proposing the operator send a working document to a board. Keyed to
+#      the exit code — no coverage inspection.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "(do not|never) offer the submission email on exit 4|never offer it on exit 3 or exit 4" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "on exit 0 ONLY|on exit 0 only"; then
+  pass "submission email suppressed on exit 3/4, offered on exit 0 only"
+else fail "email-suppression rule missing — a provisional run must NOT offer the submission email"; fi
+
+# A25: the provisional card's subtractive controls. All four, because each one
+#      is a ranking claim the skill could helpfully re-add in its own prose.
+PROV_MISS=""
+printf '%s' "$SKILL_FLAT" | grep -iqE "alphabetical" || PROV_MISS="$PROV_MISS no-alphabetical-listing"
+printf '%s' "$SKILL_FLAT" | grep -iqE "not ranked" || PROV_MISS="$PROV_MISS no-'not ranked'"
+printf '%s' "$SKILL_FLAT" | grep -iqE "names no winner|no leader" || PROV_MISS="$PROV_MISS no-leader-rule"
+printf '%s' "$SKILL_FLAT" | grep -iqE "Pending — |No Overall" || PROV_MISS="$PROV_MISS no-withheld-Overall"
+if [ -z "$PROV_MISS" ]; then
+  pass "provisional card: no rank / no leader / no Overall / alphabetical all documented"
+else fail "provisional controls missing from SKILL.md:$PROV_MISS"; fi
+
+# A26: exit 4 is the NORMAL iterative path, not a failure. If the skill frames
+#      it as a defect the operator will chase "fixing" it — or worse, wait to
+#      run until the grid is full, which is the workflow P1-2 exists to enable.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "normal path, not a failure|not a failure|expected mid-evaluation"; then
+  pass "exit 4 framed as the normal mid-evaluation path, not a failure"
+else fail "SKILL.md frames exit 4 as a failure (or does not say it is normal)"; fi
+
+# A27: --no-audit prohibited for board runs (Floyd verdict (e)) AND the trap
+#      named: it exits 0 but writes PRELIMINARY artifacts.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "\-\-no-audit" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "PROHIBITED for board runs|prohibited for board runs" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "not audited"; then
+  pass "--no-audit prohibited for board runs + 'not audited' watermark documented"
+else fail "--no-audit prohibition / not-audited watermark missing from SKILL.md"; fi
+
+# A28: the filename IS the deliverability signal. This is the rule that
+#      survives a screenshot into a board packet, and the one that covers the
+#      --no-audit exit-0 case the table alone gets wrong.
+if printf '%s' "$SKILL_FLAT" | grep -iqE "scorecard-PRELIMINARY" \
+   && printf '%s' "$RUNBOOK_FLAT" | grep -iqE "scorecard-PRELIMINARY" \
+   && printf '%s' "$SKILL_FLAT" | grep -iqE "filename is the deliverability signal"; then
+  pass "PRELIMINARY filename rule documented as the deliverability signal"
+else fail "PRELIMINARY filename / deliverability-signal rule missing"; fi
+
+# A29: audit-step doc drift (Floyd's P1-1 row). The audit is IN-ENGINE,
+#      default-ON and PRE-render — the docs used to describe a separate step
+#      the orchestrator runs afterwards.
+if printf '%s' "$RUNBOOK_FLAT" | grep -iqE "There is no separate audit step" \
+   && printf '%s' "$RUNBOOK_FLAT" | grep -iqE "before the render|BEFORE the render" \
+   && ! printf '%s' "$SKILL_FLAT" | grep -iqE "Run the audit step"; then
+  pass "audit documented as in-engine, default-ON, pre-render (no separate step)"
+else fail "audit-step doc drift: docs still describe a separate/after-the-render audit step"; fi
+
+# A30: blank = not yet scored (P1-2's trigger, and the operator-facing change
+#      to the Scores grid). Plus the all-blank floor.
+INPUTS_FLAT="$(flat "$SKILL_DIR/reference/inputs.md")"
+if printf '%s' "$INPUTS_FLAT" | grep -iqE "blank cell = not yet scored|means not yet scored" \
+   && printf '%s' "$INPUTS_FLAT" | grep -iqE "all-blank grid stops the run|entirely blank grid stops the run"; then
+  pass "blank-score semantics (= not yet scored) + all-blank floor documented"
+else fail "inputs.md does not document blank = not-yet-scored / the all-blank floor"; fi
 
 
 echo ""
@@ -279,6 +453,176 @@ PYEOF
   if [ $? -ne 0 ] && grep -q "SF basis not confirmed" "$OUT/_eval_neg.log" 2>/dev/null; then
     pass "missing SF decision hard-stops at the SF gate (no silent fallback)"
   else fail "missing SF decision did NOT stop at the SF gate (see $OUT/_eval_neg.log)"; fi
+
+  # B-pack-exclusion: --inputs + an individual flag MUST hard-stop (Marvin
+  # §9.2, one channel per run). The CLI enforces this BEFORE it opens the pack,
+  # so a non-existent pack path still exercises the real check — no pack
+  # fixture needed here (the live producer->consumer pack suite is
+  # engines/scorecard/tests/test_producer_live_compat.py, which release.sh
+  # already gates; this asserts the CONTRACT THE SKILL TEXT PROMISES).
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "x" \
+      --inputs "$OUT/no_such_pack.xlsx" \
+      --baseline examples/sample_baseline.json \
+      --sf-confirmed --baseline-confirmed \
+      --out-dir "$OUT" --html-only ) > "$OUT/_eval_pack_excl.log" 2>&1
+  if [ $? -ne 0 ] && grep -q -- "--inputs supplies the same facts as" "$OUT/_eval_pack_excl.log" 2>/dev/null; then
+    pass "--inputs + --baseline hard-stops on the mutual-exclusion rule"
+  else fail "--inputs + an individual flag did NOT hard-stop (see $OUT/_eval_pack_excl.log)"; fi
+
+  # B-pack-not-a-pack: --inputs pointed at a workbook that is not a run pack
+  # must stop loudly and name what it is missing — the docs tell the operator
+  # this is the gate working, so the message has to actually be there. The
+  # matrix fixture is a real, valid workbook that is NOT a pack.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "x" \
+      --inputs "$MATRIX" \
+      --sf-confirmed --baseline-confirmed \
+      --out-dir "$OUT" --html-only ) > "$OUT/_eval_pack_bad.log" 2>&1
+  if [ $? -ne 0 ] && grep -q "is not a scorecard run pack" "$OUT/_eval_pack_bad.log" 2>/dev/null; then
+    pass "--inputs on a non-pack workbook hard-stops naming the missing tabs"
+  else fail "--inputs on a non-pack workbook did NOT stop cleanly (see $OUT/_eval_pack_bad.log)"; fi
+
+  # B-pack-band: the band flags conflict with --inputs too. This is a
+  # REGRESSION PIN, not a duplicate of the --baseline check above: the band
+  # arrives as its own set of flags that read like ordinary run parameters, and
+  # before they were added to PACK_CONFLICTING_FLAGS a pack run accepted
+  # --band-low and silently rendered a card whose band contradicted the
+  # Baseline tab the owner had just confirmed at preview.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "x" \
+      --inputs "$OUT/no_such_pack.xlsx" --band-low 1.05 \
+      --sf-confirmed --baseline-confirmed \
+      --out-dir "$OUT" --html-only ) > "$OUT/_eval_pack_band.log" 2>&1
+  if [ $? -ne 0 ] && grep -q -- "--band-low" "$OUT/_eval_pack_band.log" 2>/dev/null; then
+    pass "--inputs + --band-low hard-stops naming the band flag"
+  else fail "--inputs + --band-low did NOT hard-stop (the band silently overrides the pack — see $OUT/_eval_pack_band.log)"; fi
+
+  # B-pack-band-zero: the falsiness edge. The band flags are floats, so
+  # `--band-low 0` is FALSY — a conflict check written as a truthiness test
+  # (`if getattr(args, dest)`) lets a zero band through and re-bands a
+  # confirmed card at $0. The predicate must be "was the flag supplied"
+  # (`is not None`). Pinned here because it is invisible in review and reads
+  # like a harmless simplification.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "x" \
+      --inputs "$OUT/no_such_pack.xlsx" --band-low 0 \
+      --sf-confirmed --baseline-confirmed \
+      --out-dir "$OUT" --html-only ) > "$OUT/_eval_pack_band0.log" 2>&1
+  if [ $? -ne 0 ] && grep -q -- "--band-low" "$OUT/_eval_pack_band0.log" 2>/dev/null; then
+    pass "--inputs + --band-low 0 hard-stops (falsy value does not evade the check)"
+  else fail "--inputs + --band-low 0 evaded the conflict check — the predicate regressed to truthiness (see $OUT/_eval_pack_band0.log)"; fi
+
+  # -------------------------------------------------------------------------
+  # EXIT CONTRACT v2 (P1-1) + PROVISIONAL (P1-2), live. The skill text tells the
+  # operator what each exit means and gates the submission email on it, so the
+  # codes are a CONTRACT WITH THE SKILL, not an engine detail. The truth table
+  # itself is unit-tested (tests/test_exit_contract.py); these assert the two
+  # ends the skill actually observes — the code and the filename.
+  # -------------------------------------------------------------------------
+
+  # B-exit-0 already asserted above ("engine exited 0"), and it wrote
+  # scorecard.html — assert the clean run is NOT named PRELIMINARY, which is
+  # the other half of the filename rule.
+  if [ -f "$OUT/scorecard.html" ] && [ ! -f "$OUT/scorecard-PRELIMINARY.html" ]; then
+    pass "exit 0 (full coverage) writes scorecard.html — the deliverable name"
+  else fail "a clean run did not produce the plain scorecard.html name"; fi
+
+  # B-exit-1: a bad --matrix path is ENVIRONMENT (1), not an input gate (2).
+  # The distinction is the whole point of P1-1: exit 1 must mean the same thing
+  # here as in the matrix engine (nothing written), and it must be a clean
+  # [STOP], not the traceback it used to be.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$OUT/no_such_matrix.xlsx" --project-name "x" \
+      --sf-confirmed --band-low 1.05 --band-high 1.40 --mid 1.20 \
+      --baseline examples/sample_baseline.json --baseline-confirmed \
+      --scoring-framework templates/scoring-framework-template.xlsx \
+      --category-scores "$SCORES_XLSX" \
+      --out-dir "$OUT" --html-only ) > "$OUT/_eval_exit1.log" 2>&1
+  RC1=$?
+  if [ $RC1 -eq 1 ] && grep -q "\[STOP\]" "$OUT/_eval_exit1.log" 2>/dev/null \
+     && ! grep -q "Traceback" "$OUT/_eval_exit1.log" 2>/dev/null; then
+    pass "bad --matrix path exits 1 (environment) with a clean [STOP], no traceback"
+  else fail "bad --matrix path: expected exit 1 + [STOP] + no traceback, got exit $RC1 (see $OUT/_eval_exit1.log)"; fi
+
+  # B-exit-4: a PARTIALLY scored grid renders PROVISIONAL. Generated here with
+  # two cells left blank — blank = not-yet-scored is P1-2's trigger, and this
+  # asserts the three facts the skill's exit-4 handler promises the operator:
+  # the code, the renamed artifacts, and the composed watermark reason.
+  PARTIAL_XLSX="$OUT/eval_category_scores_partial.xlsx"
+  "$PYTHON_BIN" - "$PARTIAL_XLSX" <<'PYEOF' > "$OUT/_eval_partial_gen.log" 2>&1
+import sys
+import openpyxl
+from openpyxl.styles import Font
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Category_Scores"
+labels = ["Pricing", "Scope", "Condo Exp", "CO Risk",
+          "Reputation", "Financial", "Controls", "Docs"]
+ws.cell(row=1, column=1, value="DETAILED CATEGORY SCORES — PARTIAL (skill-eval)")
+for col, header in enumerate(["Firm"] + labels, start=1):
+    ws.cell(row=2, column=col, value=header).font = Font(bold=True)
+firms = {
+    "Alpine Restoration Group": [8, 8, 7, 7, 8, 7, 7, 8],
+    "Bayside Builders LLC":     [7, 7, 7, 6, 7, 7, 6, 7],
+    "Cypress Construction Co.": [6, 7, 6, 6, 6, 6, 6, 6],
+    "Driftwood Contractors":    [5, 6, 5, 5, 6, 5, 5, 5],
+}
+for row, (firm, scores) in enumerate(firms.items(), start=3):
+    ws.cell(row=row, column=1, value=firm)
+    for col, score in enumerate(scores, start=2):
+        # leave two cells of the first bidder UNSCORED -> partial coverage
+        if row == 3 and col in (2, 3):
+            continue
+        ws.cell(row=row, column=col, value=score)
+wb.save(sys.argv[1])
+PYEOF
+  OUT4="$OUT/prov"; mkdir -p "$OUT4"
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "Eval Provisional · Restoration" \
+      --sf-confirmed --band-low 1.05 --band-high 1.40 --mid 1.20 \
+      --baseline examples/sample_baseline.json --baseline-confirmed \
+      --scoring-framework templates/scoring-framework-template.xlsx \
+      --category-scores "$PARTIAL_XLSX" \
+      --out-dir "$OUT4" --html-only ) > "$OUT4/_eval_prov.log" 2>&1
+  RC4=$?
+  [ $RC4 -eq 4 ] && pass "partial coverage exits 4 (delivered PROVISIONAL)" \
+    || fail "partial coverage exited $RC4, expected 4 (see $OUT4/_eval_prov.log)"
+  if [ -f "$OUT4/scorecard-PRELIMINARY.html" ] \
+     && [ -f "$OUT4/scorecard_summary-PRELIMINARY.html" ] \
+     && [ ! -f "$OUT4/scorecard.html" ]; then
+    pass "provisional run renames BOTH card and summary to -PRELIMINARY"
+  else fail "provisional artifacts not renamed (the deliverable name must not be reused)"; fi
+  if grep -q "PRELIMINARY — evaluation incomplete" "$OUT4/_eval_prov.log" 2>/dev/null; then
+    pass "provisional watermark names its reason (evaluation incomplete)"
+  else fail "provisional run did not report the composed watermark reason"; fi
+  # the card must not rank: run json records rank null, not a number.
+  if "$PYTHON_BIN" -c "
+import json, sys
+run = json.load(open('$OUT4/scorecard_run.json'))
+sys.exit(0 if (run['full_coverage'] is False
+               and all(b['rank'] is None for b in run['bidders'])) else 1)
+" 2>/dev/null; then
+    pass "provisional run json: full_coverage false, every rank null (not ranked)"
+  else fail "provisional run json still carries ranks — the field was ranked on an incomplete record"; fi
+
+  # B-no-audit: exits 0 but the ARTIFACT carries the disclosure. This is the
+  # one case where exit 0 is not deliverable, which is exactly why the skill's
+  # rule is "the filename is the signal", not "0 means ship it".
+  OUTNA="$OUT/noaudit"; mkdir -p "$OUTNA"
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
+      --matrix "$MATRIX" --project-name "Eval NoAudit" \
+      --sf-confirmed --band-low 1.05 --band-high 1.40 --mid 1.20 \
+      --baseline examples/sample_baseline.json --baseline-confirmed \
+      --scoring-framework templates/scoring-framework-template.xlsx \
+      --category-scores "$SCORES_XLSX" \
+      --out-dir "$OUTNA" --html-only --no-audit ) > "$OUTNA/_eval_na.log" 2>&1
+  RCNA=$?
+  if [ $RCNA -eq 0 ] && [ -f "$OUTNA/scorecard-PRELIMINARY.html" ] \
+     && grep -q "PRELIMINARY — not audited" "$OUTNA/_eval_na.log" 2>/dev/null; then
+    pass "--no-audit exits 0 but renames + stamps 'not audited' (exit 0 != deliverable)"
+  else fail "--no-audit did not produce a 'not audited' PRELIMINARY artifact at exit 0 (rc=$RCNA, see $OUTNA/_eval_na.log)"; fi
 fi
 
 echo ""
