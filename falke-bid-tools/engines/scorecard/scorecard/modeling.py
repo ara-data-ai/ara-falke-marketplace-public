@@ -1,26 +1,30 @@
-"""Modeling layer — Darvish's Section C math + Overall presentation curve.
+"""Modeling layer — Darvish's Section C math.
 
 Implements:
   - volatility_pct(v)           (§1.3 asymmetric clamped-affine)
   - expected_final(bid, v)      (§1.4 reversion-to-buffered-target)
-  - overall_curve(...)          (§2 asymmetric compression + price-value penalty)
   - refit_*                     re-fit routines using scipy.optimize.least_squares
-                                against Darvish's published ANCHOR_* tables.
+                                against Darvish's published ANCHOR_SECTION_C table.
 
 Every modeled output is calibration, not law (Darvish §0). Coefficients come
-from config (tunable). The curve is OPT-IN and gated on 100% coverage.
+from config (tunable).
+
+CURVE RETIRED (P0-6, Floyd consolidated ruling verdict d, Derick-confirmed):
+the Overall "presentation curve" (asymmetric compression + price-value penalty
++ tier_bonus) re-ordered the award ranking under the name of presentation and
+was REMOVED from the production path. Overall /100 is the honest weighted
+average of the framework-weighted category scores — nothing adjusts it. The
+historical curve coefficients and the §2.2 anchor table survive ONLY as golden
+eval data (eval/golden/gold_data.py) for historical-card reproduction tests.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-from .config import Config
-from .errors import CoverageError
+from typing import Dict, List, Tuple
 
 
 # =============================================================================
-# Darvish's published anchor tables (the FIT CONTRACT, modeling spec §1.2, §2.2)
+# Darvish's published anchor table (the FIT CONTRACT, modeling spec §1.2)
 # These are the targets the re-fit must reproduce. They are the truth; the
 # coefficients are a starting prior.
 # =============================================================================
@@ -36,17 +40,6 @@ ANCHOR_SECTION_C: List[Tuple[str, float, float, float]] = [
     ("Borealis", 3.40, 7.0,  3.598),
     ("Dorne",    3.90, 4.5,  4.017),
     ("Crest",    4.55, 2.3,  4.686),
-]
-
-# (firm, wavg, card_overall, per_sf)  — §2.2 anchor table (SYNTHETIC)
-ANCHOR_OVERALL: List[Tuple[str, float, float, float]] = [
-    ("Acme",     82.0, 84, 185),
-    ("Borealis", 80.0, 82, 186),
-    ("Cascade",  70.0, 75, 172),  # bespoke Value-Tier promotion; not modeled
-    ("Dorne",    69.0, 69, 215),
-    ("Crest",    72.0, 65, 252),
-    ("Fjord",    47.0, 56, 130),
-    ("Granite",  39.0, 51, 122),
 ]
 
 VARIANCE_MID_FOR_ANCHORS = 3.45  # the mid Darvish used to compute v in §1.2
@@ -114,71 +107,6 @@ def expected_final_band(bid_m: float, v: float, variance_mid: float,
     half = max(drift_cfg["band_floor"],
                (vol_central / 100.0) * headroom * drift_cfg["band_k"])
     return center, round(center - half, 3), round(center + half, 3)
-
-
-# =============================================================================
-# Overall /100 presentation curve (§2)
-# =============================================================================
-def overall_curve(wavg: float, per_sf: float, curve_cfg: Dict) -> float:
-    """Asymmetric compression about anchor + price-value penalty (Darvish §2).
-
-    Overall = anchor + k * (wavg - anchor) - penalty
-    k       = k_low if wavg<anchor else k_high
-    penalty = pen_coef * max(0, per_sf - premium_floor)   (deadband)
-    """
-    anchor = curve_cfg["anchor"]
-    gap = wavg - anchor
-    k = curve_cfg["k_low"] if gap < 0 else curve_cfg["k_high"]
-    penalty = curve_cfg["pen_coef"] * max(0.0, per_sf - curve_cfg["premium_floor"])
-    val = anchor + k * gap - penalty
-    return float(val)
-
-
-def apply_overall(
-    wavg: float,
-    per_sf: float,
-    coverage: float,
-    cfg: Config,
-    *,
-    tier_bonus: float = 0.0,
-) -> Dict:
-    """Produce both the honest weighted average AND (if opted-in & full
-    coverage) the labeled curved Overall.
-
-    Returns dict with: weighted_average, curved (or None), applied (bool),
-    coverage, label, and any tier_bonus added.
-    """
-    curve_cfg = cfg.block("overall_curve")
-    apply = bool(curve_cfg.get("apply_curve", False))
-    result = {
-        "weighted_average": round(wavg, 1),
-        "curved": None,
-        "applied": False,
-        "coverage": round(coverage, 3),
-        "label": "Honest weighted average (deterministic).",
-        "tier_bonus": tier_bonus,
-    }
-    if not apply:
-        return result
-    # The curve MUST NOT be applied at partial coverage (Darvish §3.4).
-    if coverage < 0.999:
-        raise CoverageError(
-            f"Overall presentation curve requested but qualitative coverage is "
-            f"{coverage:.0%} (<100%). The curve is calibrated on full "
-            f"8-category averages and must not be applied to a provisional "
-            f"score. Complete scoring (or set overall_apply_curve=false) and "
-            f"re-run. (Darvish §3.4)"
-        )
-    curved = overall_curve(wavg, per_sf, curve_cfg) + tier_bonus
-    curved = max(0.0, min(100.0, round(curved)))
-    result.update({
-        "curved": curved,
-        "applied": True,
-        "label": ("Overall reflects an applied best-value PRESENTATION "
-                  "ADJUSTMENT (score compression + price-value penalty), NOT a "
-                  "raw weighted average. Raw weighted average shown alongside."),
-    })
-    return result
 
 
 # =============================================================================
@@ -297,68 +225,13 @@ def refit_drift(variance_mid: float = VARIANCE_MID_FOR_ANCHORS) -> RefitResult:
     )
 
 
-def refit_overall_curve() -> RefitResult:
-    """Re-fit (k_low, k_high, pen_coef) against ANCHOR_OVERALL with anchor and
-    premium_floor held at Darvish's values (70, 234). The value-tier anchor
-    (Cascade) is EXCLUDED from the fit (bespoke Value-Tier promotion, Darvish
-    §2.5) — included only in reported residuals.
-    """
-    import numpy as np
-    from scipy.optimize import least_squares
-
-    anchor, premium_floor = 70.0, 234.0
-    rows = ANCHOR_OVERALL
-    fit_rows = [r for r in rows if r[0] != "Cascade"]  # exclude bespoke promotion
-
-    wavg = np.array([w for (_f, w, _o, _p) in fit_rows])
-    card = np.array([o for (_f, _w, o, _p) in fit_rows])
-    psf = np.array([p for (_f, _w, _o, p) in fit_rows])
-
-    def model(p, wavg, psf):
-        k_low, k_high, pen = p
-        gap = wavg - anchor
-        k = np.where(gap < 0, k_low, k_high)
-        penalty = pen * np.maximum(0.0, psf - premium_floor)
-        return anchor + k * gap - penalty
-
-    def resid(p):
-        return model(p, wavg, psf) - card
-
-    p0 = [0.62, 1.18, 0.39]
-    sol = least_squares(resid, p0, bounds=([0, 0, 0], [3, 3, 3]))
-    k_low, k_high, pen = (float(x) for x in sol.x)
-
-    # report residuals for ALL 7 (incl. the excluded value-tier anchor) at the fitted params
-    all_w = np.array([w for (_f, w, _o, _p) in rows])
-    all_c = np.array([o for (_f, _w, o, _p) in rows])
-    all_p = np.array([p for (_f, _w, _o, p) in rows])
-    all_resid = list(model(sol.x, all_w, all_p) - all_c)
-
-    in_range = {
-        "k_low_in_[0.5,0.75]": 0.5 <= k_low <= 0.75,
-        "k_high_in_[1.05,1.3]": 1.05 <= k_high <= 1.3,
-        "pen_coef_in_[0.3,0.5]": 0.3 <= pen <= 0.5,
-    }
-    return RefitResult(
-        name="overall_curve",
-        params={"anchor": anchor, "k_low": round(k_low, 4),
-                "k_high": round(k_high, 4), "pen_coef": round(pen, 4),
-                "premium_floor": premium_floor},
-        residuals=[round(r, 3) for r in all_resid],
-        max_abs_residual=round(float(max(abs(r) for r in all_resid)), 3),
-        mean_abs_residual=round(float(sum(abs(r) for r in all_resid) / len(all_resid)), 3),
-        in_range=in_range,
-        notes="Cascade excluded from fit (bespoke +5 Value-Tier promotion, §2.5); "
-              "its residual (~-5) is reported, not chased.",
-    )
-
-
 def refit_all(variance_mid: float = VARIANCE_MID_FOR_ANCHORS) -> List[RefitResult]:
-    """Run all three re-fits. Call this as the FIRST build/validation step."""
+    """Run the Section C re-fits (volatility + drift). Call this as the FIRST
+    build/validation step. (The Overall curve re-fit was retired with the
+    curve itself — P0-6.)"""
     return [
         refit_volatility(variance_mid),
         refit_drift(variance_mid),
-        refit_overall_curve(),
     ]
 
 

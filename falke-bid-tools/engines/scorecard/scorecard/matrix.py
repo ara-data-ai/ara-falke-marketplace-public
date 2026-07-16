@@ -12,8 +12,16 @@ Detection contract:
   - Block width + stride: MEASURED from the repeating quartet and the gap to
     the next named header (NOT assumed to be 4 / 5).
   - Grand total: the row matching 'GRAND TOTAL CONSTRUCTION COST'
-    (case/space-insensitive); fallback = lowest '...TOTAL...' row below the
-    markup adders. NEVER 'CONSTRUCTION COST SUBTOTAL' (pre-markup).
+    (case/space-insensitive), OR the producer's col-A machine key GRAND_TOTAL,
+    OR an exact-label match from GT_EXACT_LABELS; fenced fallback = lowest row
+    below the markup adders whose label contains the WORD 'total' (word-
+    boundary — 'subtotal' never matches) AND which carries a numeric in at
+    least one bidder column (a legend/prose row has none). NEVER
+    'CONSTRUCTION COST SUBTOTAL' (pre-markup).
+  - Sheet selection (Marvin P0-7 ruling): explicit config/CLI value wins; else
+    the default is 'Leveled_Normalized' when present; a producer workbook
+    missing it HARD-STOPS; a single-sheet legacy workbook consumes its only
+    sheet. Never a workbook-ordering accident.
   - Duplicates: detected by normalized firm name; default keep left-most.
   - Completeness: count populated CSI division subtotals per block; flag blocks
     missing divisions that >= N peers populate (Marvin §1.4) — FLAG, never
@@ -28,7 +36,161 @@ from typing import Dict, List, Optional, Tuple
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-from .errors import GrandTotalNotFoundError, MatrixStructureError
+from .errors import (GrandTotalNotFoundError, MatrixStructureError,
+                     ProducerVersionError)
+
+
+# ----------------------------------------------------------------------------
+# sheet selection (Marvin P0-7 ruling) + producer-version contract (Floyd f)
+# ----------------------------------------------------------------------------
+# The producer's two data sheets. The board scorecard consumes the LEVELED
+# (apples-to-apples) view by default; the mirror is for reconciliation /
+# dispute / debug runs only (explicit --sheet), never a silent default.
+LEVELED_SHEET = "Leveled_Normalized"
+MIRROR_SHEET = "Bid_Form"
+
+# sheet_mode values recorded on the parse + card disclosure (narratives.py)
+MODE_LEVELED = "leveled"
+MODE_MIRROR = "mirror"
+MODE_LEGACY = "legacy"
+
+# Producer-version contract (Floyd consolidated ruling, verdict f). The matrix
+# writer stamps producer + format version as workbook custom document
+# properties; the parser checks the stamp against this supported range.
+# RELEASE.md step 2 carries the tripwire: a minor+ (format) bump on the matrix
+# engine must revisit this range in the same commit.
+STAMP_PRODUCER_PROP = "falke_bid_tools.producer"
+STAMP_FORMAT_PROP = "falke_bid_tools.format_version"
+PRODUCER_KEY = "falke-bid-tools/matrix"
+# supported format-version range: >= (0,3) and < (0,5). v0.3-era workbooks
+# (and the untracked v0.3 fixtures/eval fixtures) predate the stamp entirely —
+# a MISSING stamp is logged and treated as pre-stamp/legacy, never an error.
+SUPPORTED_PRODUCER = {PRODUCER_KEY: ((0, 3), (0, 5))}
+
+
+def resolve_sheet(sheetnames: List[str],
+                  configured: Optional[str] = None) -> Tuple[str, str]:
+    """Resolve which sheet the scorecard consumes, per Marvin's P0-7 ruling.
+
+    Returns (sheet_name, sheet_mode). Rules (in order):
+      1. An EXPLICIT value (config matrix.sheet_name / CLI --sheet) wins; a
+         missing explicit sheet is a hard stop.
+      2. Default = 'Leveled_Normalized' when present (the apples-to-apples
+         decision view; grand totals are producer-verified identical to the
+         mirror).
+      3. A producer-shaped workbook (carries 'Bid_Form' among multiple sheets)
+         WITHOUT the leveled view is a HARD STOP naming what was expected —
+         never a silent first-sheet fallback (Marvin hard rule 2). Re-run with
+         an explicit --sheet to make a non-default read a logged choice.
+      4. A single-sheet workbook (legacy single-sheet format) consumes its only
+         sheet, disclosed as legacy.
+      5. Anything else (multiple sheets, none recognized) is a hard stop
+         requiring an explicit --sheet.
+
+    sheet_mode: 'leveled' (the leveled view), 'mirror' (a non-leveled sheet
+    chosen while a leveled view exists in the workbook — NOT apples-to-apples
+    at division level), or 'legacy' (no leveled view exists).
+    """
+    if configured:
+        if configured not in sheetnames:
+            raise MatrixStructureError(
+                f"Sheet {configured!r} not in workbook {sheetnames}.")
+        chosen = configured
+    elif LEVELED_SHEET in sheetnames:
+        chosen = LEVELED_SHEET
+    elif MIRROR_SHEET in sheetnames and len(sheetnames) > 1:
+        raise MatrixStructureError(
+            f"Expected sheet {LEVELED_SHEET!r} is missing from this "
+            f"producer-format workbook (sheets: {sheetnames}). The board "
+            f"scorecard consumes the leveled/normalized view by default "
+            f"(Marvin P0-7 ruling) and never silently falls back to another "
+            f"sheet. Re-generate the matrix with a current create-matrix "
+            f"version, or pass --sheet {MIRROR_SHEET} to make an "
+            f"as-submitted read an explicit, logged choice."
+        )
+    elif len(sheetnames) == 1:
+        chosen = sheetnames[0]
+    else:
+        raise MatrixStructureError(
+            f"Workbook has multiple sheets {sheetnames} and none is the "
+            f"default {LEVELED_SHEET!r}. Pass --sheet <name> to select one "
+            f"explicitly — the consumed sheet is never a workbook-ordering "
+            f"accident (Marvin P0-7 ruling)."
+        )
+    if chosen == LEVELED_SHEET:
+        mode = MODE_LEVELED
+    elif LEVELED_SHEET in sheetnames:
+        mode = MODE_MIRROR
+    else:
+        mode = MODE_LEGACY
+    return chosen, mode
+
+
+def read_producer_stamp(wb) -> Optional[Dict[str, str]]:
+    """Read the producer stamp (custom document properties) from a workbook.
+
+    Returns {'producer': ..., 'format_version': ...} or None when unstamped
+    (pre-v0.4.1 producer output, legacy single-sheet workbooks, hand-built files).
+    Readable in read_only mode (verified openpyxl >= 3.1).
+    """
+    try:
+        props = {p.name: p.value for p in wb.custom_doc_props.props}
+    except Exception:  # pragma: no cover - openpyxl<3.1 has no custom props
+        return None
+    producer = props.get(STAMP_PRODUCER_PROP)
+    version = props.get(STAMP_FORMAT_PROP)
+    if producer is None and version is None:
+        return None
+    return {"producer": producer, "format_version": version}
+
+
+def _parse_version(v: str) -> Tuple[int, int]:
+    parts = str(v or "").strip().split(".")
+    try:
+        return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        raise ProducerVersionError(
+            f"Unparseable producer format version {v!r} in workbook stamp.")
+
+
+def check_producer_stamp(stamp: Optional[Dict[str, str]]) -> Optional[str]:
+    """Enforce SUPPORTED_PRODUCER against a workbook stamp.
+
+    Returns a log line (or None when unstamped); raises ProducerVersionError
+    when the stamp names a producer/version this scorecard does not support.
+    """
+    if stamp is None:
+        return None
+    producer = stamp.get("producer")
+    version = stamp.get("format_version")
+    if producer not in SUPPORTED_PRODUCER:
+        raise ProducerVersionError(
+            f"Workbook is stamped by unknown producer {producer!r} "
+            f"(format {version!r}); this scorecard supports "
+            f"{sorted(SUPPORTED_PRODUCER)}. Refusing to parse a workbook "
+            f"from an undeclared producer."
+        )
+    lo, hi = SUPPORTED_PRODUCER[producer]
+    v = _parse_version(version)
+    if not (lo <= v < hi):
+        raise ProducerVersionError(
+            f"Workbook producer format {version!r} ({producer}) is outside "
+            f"this scorecard's supported range "
+            f">={lo[0]}.{lo[1]},<{hi[0]}.{hi[1]}. A NEWER matrix format may "
+            f"carry changes this parser has not been validated against — "
+            f"update the scorecard (SUPPORTED_PRODUCER) or regenerate the "
+            f"matrix with a supported create-matrix version."
+        )
+    return (f"producer stamp: {producer} format {version} — inside supported "
+            f"range >={lo[0]}.{lo[1]},<{hi[0]}.{hi[1]}.")
+
+
+# Structural signature of the producer's Stage-6b RED quarantine banner
+# (POST_WRITE_TIEOUT_FAILURE — write_matrix._QUARANTINE_BANNER_LINE_1). A
+# workbook carrying it failed the producer's own final self-check and must
+# never be consumed silently (Marvin P0-7 hard rule 5 -> audit C17 BLOCKER).
+QUARANTINE_SIGNATURE = "automated check failed"
+QUARANTINE_SCAN_ROWS = 6
 
 
 # ----------------------------------------------------------------------------
@@ -222,6 +384,16 @@ class ParsedMatrix:
     # scan (Harbor's 3,000,000 lives here, not on a division row). None if the
     # matrix carries no such labeled row.
     construction_subtotal_row: Optional[int] = None
+    # HOW the consumed sheet was chosen (Marvin P0-7): 'leveled' | 'mirror' |
+    # 'legacy'. Drives the mandatory on-card disclosure line.
+    sheet_mode: str = MODE_LEGACY
+    # producer stamp read from the workbook custom properties (None = unstamped
+    # pre-stamp/legacy workbook). {'producer':..., 'format_version':...}
+    producer_stamp: Optional[Dict[str, str]] = None
+    # True when the consumed sheet carries the producer's Stage-6b RED
+    # quarantine banner (POST_WRITE_TIEOUT_FAILURE). The workbook failed the
+    # producer's own self-check — audit C17 blocks on this flag.
+    quarantine_flag: bool = False
     # the in-memory Grid snapshot used for parsing. Carried on the parsed result
     # so downstream readers (the QA fingerprint test) reuse the SAME absolute,
     # read-only grid instead of reopening the workbook and doing read_only
@@ -244,7 +416,7 @@ def apply_display_aliases(parsed: "ParsedMatrix",
     lets the run output the short names WITHOUT touching duplicate detection
     (which stays on the raw normalized name) or the audit trail (raw_name is
     preserved and logged). The alias is the SINGLE place display naming is
-    overridden; everything downstream (overrides lookup, tier_bonus, ranking,
+    overridden; everything downstream (overrides lookup, ranking,
     render) keys off the resulting ``block.name`` so the names line up end to end.
 
     ``aliases`` keys may be the raw matrix name, the current display name, or a
@@ -384,9 +556,19 @@ class MatrixParser:
         (--sf-basis). Reuses the SAME ``_locate_gsf`` detector the full parse
         uses (no second GSF heuristic), so the suggested value and the value the
         audit later sees are identical. Returns (gsf_row, gsf_value); either may
-        be None when no labeled GSF / no numeric value is present."""
+        be None when no labeled GSF / no numeric value is present.
+
+        Sheet note: the SF details line lives on the producer's Bid_Form mirror
+        (row 2), not the leveled view, so this metadata probe reads the mirror
+        when present (else the first sheet) regardless of which sheet the run
+        consumes. The SF basis is a SUGGESTION the user must confirm — it is
+        not a compared quantity, so Marvin's one-card-one-sheet rule (which
+        binds parsed dollar quantities) does not apply to it."""
         wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
-        sheet = self.cfg.get("sheet_name") or wb.sheetnames[0]
+        sheet = self.cfg.get("sheet_name")
+        if sheet is None:
+            sheet = (MIRROR_SHEET if MIRROR_SHEET in wb.sheetnames
+                     else wb.sheetnames[0])
         if sheet not in wb.sheetnames:
             raise MatrixStructureError(
                 f"Sheet {sheet!r} not in workbook {wb.sheetnames}.")
@@ -395,10 +577,15 @@ class MatrixParser:
 
     def parse(self, xlsx_path: str, peer_fraction: float = 0.5) -> ParsedMatrix:
         wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
-        sheet = self.cfg.get("sheet_name") or wb.sheetnames[0]
-        if sheet not in wb.sheetnames:
-            raise MatrixStructureError(
-                f"Sheet {sheet!r} not in workbook {wb.sheetnames}.")
+        # ---- producer-version contract (Floyd verdict f): read + enforce the
+        # workbook stamp BEFORE any structural parsing. Unstamped = pre-stamp/
+        # legacy, logged and allowed; out-of-range = hard stop (exit 2).
+        stamp = read_producer_stamp(wb)
+        stamp_log = check_producer_stamp(stamp)
+        # ---- sheet selection is an explicit, ruled decision (Marvin P0-7) —
+        # never "first sheet in the workbook".
+        sheet, sheet_mode = resolve_sheet(
+            list(wb.sheetnames), self.cfg.get("sheet_name"))
         ws = wb[sheet]
         # PERFORMANCE: read the whole used range into memory exactly ONCE, then
         # every detector reads from this in-memory grid instead of doing repeated
@@ -409,7 +596,35 @@ class MatrixParser:
         max_row = grid.max_row
         max_col = grid.max_col
 
-        log: List[str] = [f"sheet={sheet} dims={max_row}x{max_col}"]
+        log: List[str] = [
+            f"sheet={sheet} (mode={sheet_mode}; explicit selection — Marvin "
+            f"P0-7) dims={max_row}x{max_col}"]
+        if stamp_log:
+            log.append(stamp_log)
+        else:
+            log.append("no producer stamp on workbook — pre-stamp/legacy or "
+                       "non-producer file; provenance unconfirmed.")
+
+        # ---- Stage-6b quarantine banner (Marvin P0-7 hard rule 5): a workbook
+        # that failed the producer's own self-check must never be consumed
+        # silently. Flag here (LOUD in the log); audit C17 blocks on it.
+        quarantine = False
+        for qr in range(1, min(QUARANTINE_SCAN_ROWS, max_row) + 1):
+            for qc in (1, 2, 3):
+                v = grid.cell(qr, qc)
+                if isinstance(v, str) and QUARANTINE_SIGNATURE in v.lower():
+                    quarantine = True
+                    break
+            if quarantine:
+                break
+        if quarantine:
+            log.append(
+                "QUARANTINE BANNER DETECTED: this workbook carries the "
+                "producer's Stage-6b POST_WRITE_TIEOUT_FAILURE banner "
+                "(\"AUTOMATED CHECK FAILED\"). Figures failed the matrix "
+                "tool's own self-check — the audit will BLOCK this run "
+                "(C17); do not deliver a scorecard from this workbook."
+            )
 
         header_row = self._detect_header_row(grid, max_row, max_col)
         log.append(f"detected bidder-name row = {header_row}")
@@ -422,7 +637,7 @@ class MatrixParser:
             f"starts={[b.start_col_letter for b in blocks]}"
         )
 
-        gt_row, gt_label = self._locate_grand_total(grid, max_row)
+        gt_row, gt_label = self._locate_grand_total(grid, max_row, blocks)
         log.append(f"grand-total row = {gt_row} (label {gt_label!r})")
 
         gsf_row, gsf_val = self._locate_gsf(grid, max_row)
@@ -457,6 +672,9 @@ class MatrixParser:
             division_rows=division_rows,
             log=log,
             construction_subtotal_row=getattr(self, "_cc_subtotal_row", None),
+            sheet_mode=sheet_mode,
+            producer_stamp=stamp,
+            quarantine_flag=quarantine,
             grid=grid,
         )
 
@@ -752,47 +970,108 @@ class MatrixParser:
             used_cols.add(target)
         return out
 
-    def _locate_grand_total(self, grid, max_row: int) -> Tuple[int, str]:
-        """Find compared-total row by label; fallback below markup adders.
-        NEVER returns the CONSTRUCTION COST SUBTOTAL row (Marvin §1.2).
+    # Exact-label set for the compared total. The producer's Bid_Form mirror
+    # writes the display label 'GRAND TOTAL' (col B) beside the col-A machine
+    # key; the leveled sheet and the legacy reference carry the full label
+    # (matched via the configured gt_label). Exact matches only — NEVER a
+    # substring scan against prose (the v0.4.0 legend break, P0-3).
+    GT_EXACT_LABELS = ("grand total", "grand total construction cost")
+    # col-A machine key the producer writes on the Bid_Form footer.
+    GT_MACHINE_KEY = "grand_total"
+
+    def _locate_grand_total(self, grid, max_row: int,
+                            blocks: Optional[List[BidderBlock]] = None
+                            ) -> Tuple[int, str]:
+        """Find the compared-total row. NEVER the CONSTRUCTION COST SUBTOTAL
+        row (Marvin §1.2).
+
+        Detection order (P0-3, Floyd verdict b — surgical machine-key/fenced
+        fallback, not a format-adapter layer):
+          1. the CONFIGURED exact label (case/space-insensitive);
+          2. the producer's col-A MACHINE KEY 'GRAND_TOTAL' (house format);
+          3. a GT_EXACT_LABELS exact match (e.g. the mirror's bare
+             'GRAND TOTAL');
+          4. FENCED fallback: the lowest row strictly below the construction
+             cost subtotal whose label contains the WORD 'total' (word-
+             boundary — 'subtotal' inside legend prose can never match) AND
+             which carries a numeric value in at least one bidder column
+             (structural fence: a legend/prose row has no bidder-column
+             values). The v0.4.0 unified-legend row fails BOTH fences.
 
         Side effect: records the detected CONSTRUCTION COST SUBTOTAL row on
-        ``self._cc_subtotal_row`` (None if absent) so the QA fingerprint test can
-        scan that pre-markup per-bidder subtotal (where Harbor's 3,000,000
-        sits). It is recorded, never used as the compared total."""
+        ``self._cc_subtotal_row`` (None if absent) so the QA fingerprint test
+        and the division-row scan can use that pre-markup boundary. It is
+        recorded, never used as the compared total."""
         cc_subtotal_row = None
         candidate_total_rows: List[Tuple[int, str]] = []
-        gt_found: Optional[Tuple[int, str]] = None
+        gt_configured: Optional[Tuple[int, str]] = None
+        gt_machine_key: Optional[Tuple[int, str]] = None
+        gt_exact: Optional[Tuple[int, str]] = None
+        word_total_re = re.compile(r"(?<![a-z0-9])total(?![a-z0-9])")
         for r in range(1, max_row + 1):
+            # machine key lives in col A even when the display label row
+            # resolves via col B — check it independently of the label scan.
+            key_a = grid.cell(r, 1)
+            if (key_a is not None and gt_machine_key is None
+                    and _norm_label(key_a).replace(" ", "_") ==
+                    self.GT_MACHINE_KEY):
+                # report the col-B display label when present (the machine key
+                # itself is the anchor, not the board-facing label)
+                disp = grid.cell(r, 2)
+                gt_machine_key = (
+                    r, str(disp).strip() if isinstance(disp, str) and
+                    disp.strip() else str(key_a).strip())
             for col in (2, 3, 1):  # B, C, A label columns
                 label = grid.cell(r, col)
                 if label is None:
                     continue
                 nl = _norm_label(label)
-                if nl == self.gt_label and gt_found is None:
-                    gt_found = (r, str(label).strip())
+                if nl == self.gt_label and gt_configured is None:
+                    gt_configured = (r, str(label).strip())
+                if nl in self.GT_EXACT_LABELS and gt_exact is None:
+                    gt_exact = (r, str(label).strip())
                 if nl == self.cc_subtotal_label:
                     cc_subtotal_row = r
-                if "total" in nl and nl != self.cc_subtotal_label:
+                if (word_total_re.search(nl)
+                        and nl != self.cc_subtotal_label):
                     candidate_total_rows.append((r, str(label).strip()))
                 break  # first non-empty label column wins for this row
         self._cc_subtotal_row = cc_subtotal_row
-        if gt_found is not None:
-            return gt_found
-        # fallback: lowest '...total...' row strictly below the construction
-        # cost subtotal (i.e. below the markup adders)
+        for found in (gt_configured, gt_machine_key, gt_exact):
+            if found is not None:
+                return found
+        # FENCED fallback: lowest word-'total' row strictly below the
+        # construction cost subtotal that carries a numeric in a bidder column.
         if cc_subtotal_row is not None:
             below = [(r, lab) for (r, lab) in candidate_total_rows
-                     if r > cc_subtotal_row]
+                     if r > cc_subtotal_row
+                     and self._row_has_bidder_value(grid, r, blocks)]
             if below:
                 r, lab = max(below, key=lambda t: t[0])
                 return r, lab
         raise GrandTotalNotFoundError(
-            "Could not locate 'GRAND TOTAL CONSTRUCTION COST' and no safe "
-            "fallback total row exists below the markup adders. Refusing to use "
-            "'CONSTRUCTION COST SUBTOTAL' (pre-markup, not apples-to-apples). "
-            "Check the matrix or set matrix.grand_total_label in config."
+            "Could not locate 'GRAND TOTAL CONSTRUCTION COST' (nor the "
+            "producer's col-A GRAND_TOTAL machine key, nor an exact "
+            "'GRAND TOTAL' label) and no safe fallback total row exists below "
+            "the markup adders. Refusing to use 'CONSTRUCTION COST SUBTOTAL' "
+            "(pre-markup, not apples-to-apples). Check the matrix or set "
+            "matrix.grand_total_label in config."
         )
+
+    @staticmethod
+    def _row_has_bidder_value(grid, row: int,
+                              blocks: Optional[List[BidderBlock]]) -> bool:
+        """Structural prose fence: True when the row carries a numeric in at
+        least one detected bidder column. Legend/prose rows carry none. With no
+        blocks supplied (defensive), the fence is inert (returns True) — the
+        word-boundary fence above still holds."""
+        if not blocks:
+            return True
+        for b in blocks:
+            for c in b.cols.values():
+                if isinstance(grid.cell(row, c), (int, float)):
+                    return True
+        return False
 
     def _locate_gsf(self, grid, max_row: int) -> Tuple[Optional[int], Optional[float]]:
         for r in range(1, max_row + 1):
@@ -857,9 +1136,17 @@ class MatrixParser:
         running total, whose normalized label is EXACTLY 'subtotal' with no
         division-name prefix) — none of these is a per-division subtotal. Genuine
         CSI division subtotals always carry a division-name prefix before the
-        word (e.g. 'GENERAL CONDITIONS SUBTOTAL', 'MEHANICAL - HVAC SUBTOTAL')."""
+        word (e.g. 'GENERAL CONDITIONS SUBTOTAL', 'MEHANICAL - HVAC SUBTOTAL').
+
+        SCAN BOUND (P0-3 ride-along, C-R4): CSI division subtotals live ABOVE
+        the construction cost subtotal; the footer fee block between it and the
+        grand total carries 'Fees Subtotal', which is a MARKUP row, not a 21st
+        CSI division. The scan therefore stops at the construction-subtotal row
+        when one was detected (else at the grand-total row, the old bound)."""
         rows: List[Tuple[int, str]] = []
-        for r in range(1, gt_row):
+        cc_row = getattr(self, "_cc_subtotal_row", None)
+        upper = cc_row if cc_row is not None else gt_row
+        for r in range(1, upper):
             for col in (3, 2, 1):
                 label = grid.cell(r, col)
                 if label is None:

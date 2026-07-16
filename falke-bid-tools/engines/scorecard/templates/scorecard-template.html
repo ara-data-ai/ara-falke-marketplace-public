@@ -724,7 +724,7 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
     {% if disclosures.fingerprints %}
     <div class="note">
       <h4>Modeled-baseline coincidences</h4>
-      <p>{{ disclosures.fingerprints | length }} baseline line{{ 's' if disclosures.fingerprints | length != 1 else '' }} closely match a bidder subtotal, noted for transparency — the modeled baseline is ARA's independent estimate, not a bidder figure:</p>
+      <p>{{ disclosures.fingerprints | length }} baseline line{{ 's' if disclosures.fingerprints | length != 1 else '' }} closely match a bidder subtotal, noted for transparency. The modeled baseline is the cost yardstick supplied and confirmed by the reviewer for this run; a close match can mean it leans on a bidder's figure rather than standing apart from it — read these coincidences with that in mind:</p>
       <ul>
         {% for f in disclosures.fingerprints %}<li>Baseline “{{ f.baseline_label }}” ≈ {{ f.bidder }} “{{ f.bidder_label }}” (within {{ f.pct_delta }}).</li>{% endfor %}
       </ul>
@@ -733,12 +733,29 @@ table.sc td.score-num { text-align: center; }   /* the 1–10 category cells */
     {% if disclosures.provisional %}
     <div class="note">
       <h4>Provisional scores</h4>
-      <p>The Overall column is an honest weighted average; the presentation curve is withheld while qualitative coverage is partial. These bidders are scored provisionally — their rank position is provisional accordingly:</p>
+      <p>The Overall column is an honest weighted average. These bidders are scored at partial qualitative coverage — their rank position is provisional accordingly:</p>
       <ul>
         {% for p in disclosures.provisional %}<li>{{ p.name }} ({{ p.coverage }} qualitative coverage)</li>{% endfor %}
       </ul>
     </div>
     {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ================= DATA-SOURCE PROVENANCE (Marvin P0-7) ================ -->
+<!--
+  The consumed-sheet disclosure renders UNCONDITIONALLY, in every mode
+  (leveled default / mirror / legacy) — a mirror-mode draft carries its own
+  warning even if it leaks. Same line is recorded in scorecard_run.json.
+-->
+{% if sheet_disclosure %}
+<div class="section">
+  <div class="disclosures">
+    <div class="note">
+      <h4>Data source</h4>
+      <p>{{ sheet_disclosure }}</p>
+    </div>
   </div>
 </div>
 {% endif %}

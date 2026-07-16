@@ -82,7 +82,13 @@ def _doc(i):
     )
 
 
-def build(n: int) -> Path:
+def build(n: int, out_dir: Path = HERE) -> Path:
+    """Build an n-bidder synthetic workbook with the CURRENT in-tree producer.
+
+    out_dir defaults to this fixtures directory (regenerating the local pins);
+    the live cross-engine compat gate (tests/test_producer_live_compat.py)
+    calls it with a tmp dir so every test run exercises the producer that
+    exists NOW — the fixture-freshness gap that let v0.4.0 ship (P0-2)."""
     docs = [_doc(i) for i in range(n)]
     mirrors = [normalize_bid(d) for d in docs]
     leveled = compute_cross_bid_stats(
@@ -95,7 +101,7 @@ def build(n: int) -> Path:
         sf_basis_label="GSF",
         sf_source="explicit",
     )
-    out = HERE / f"create_matrix_{n}bidders.xlsx"
+    out = Path(out_dir) / f"create_matrix_{n}bidders.xlsx"
     write_matrix(mirrors, out, run, audit_items=items, leveled_bids=leveled)
     print(f"[fixtures] wrote {out}")
     return out

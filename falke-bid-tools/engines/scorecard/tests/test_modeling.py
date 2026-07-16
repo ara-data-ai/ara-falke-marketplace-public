@@ -1,17 +1,23 @@
-"""Modeling tests: Section C reproduction, Overall curve, and the scipy re-fit.
+"""Modeling tests: Section C reproduction and the scipy re-fit.
 
-The re-fit tests are the FIRST build step called out: confirm the curve
-params land in Darvish's stated ranges and reproduce his anchor tables.
+The re-fit tests are the FIRST build step called out: confirm the Section C
+params land in Darvish's stated ranges and reproduce his anchor table.
+
+CURVE RETIRED (P0-6, Floyd consolidated ruling verdict d): the Overall
+presentation-curve tests that lived here (test_refit_overall_curve_in_range,
+test_overall_curve_reproduces_6_of_7, test_overall_curve_premium_penalty_
+applies, test_overall_curve_defensive_no_penalty_deadband) are RETIRED with
+the curve itself. Overall is the honest weighted average; historical curve
+reproduction survives only in the local-only golden eval
+(eval/golden/test_gold_modeling.py, against frozen coefficients).
 """
 import math
 
 import pytest
 
-from scorecard.modeling import (ANCHOR_OVERALL, ANCHOR_SECTION_C,
-                                VARIANCE_MID_FOR_ANCHORS, expected_final,
-                                overall_curve, refit_all, refit_drift,
-                                refit_overall_curve, refit_volatility,
-                                volatility_pct, _v_from_bid)
+from scorecard.modeling import (ANCHOR_SECTION_C, VARIANCE_MID_FOR_ANCHORS,
+                                expected_final, refit_all, refit_drift,
+                                refit_volatility, volatility_pct, _v_from_bid)
 
 
 # ---- default config blocks mirroring scorecard_config.yaml ----
@@ -19,8 +25,6 @@ VOL = {"v0": 6.0, "slope_under": 0.72, "slope_over": 0.115, "floor": 2.0,
        "cap": 35.0, "half_width_min": 1.5, "half_width_frac": 0.18}
 DRIFT = {"creep": 0.030, "buffer": 0.05, "lambda0": 0.43, "lambda_slope": 0.19,
          "lambda_max": 0.55, "lambda_over": 0.0, "band_k": 0.5, "band_floor": 0.05}
-CURVE = {"anchor": 70, "k_low": 0.62, "k_high": 1.18, "pen_coef": 0.39,
-         "premium_floor": 234}
 
 
 # ===========================================================================
@@ -41,21 +45,19 @@ def test_refit_drift_in_range_and_strong():
     assert rr.mean_abs_residual < 0.03, rr.residuals
 
 
-def test_refit_overall_curve_in_range():
-    rr = refit_overall_curve()
-    assert all(rr.in_range.values()), rr.in_range
-    # 6 of 7 within +/-2.5. The value-tier anchor (Cascade, ~-5) sits off the
-    # fitted curve by design: it carries the bespoke Value-Tier +5 promotion and
-    # is EXCLUDED from the fit (Darvish §2.5); its residual is reported, not
-    # chased. This matches what the documented runtime curve produces; the
-    # gold-card path (test_overall_curve_reproduces_6_of_7) is unaffected.
-    within = sum(1 for r in rr.residuals if abs(r) <= 2.5)
-    assert within >= 6, rr.residuals
-
-
 def test_refit_all_runs():
+    """Section C re-fits only — the Overall curve re-fit is retired (P0-6)."""
     results = refit_all()
-    assert {r.name for r in results} == {"volatility", "drift", "overall_curve"}
+    assert {r.name for r in results} == {"volatility", "drift"}
+
+
+def test_curve_is_retired_from_the_engine():
+    """P0-6 guard: no Overall presentation curve survives in the modeling
+    layer — nothing in the production path can adjust the ranked number."""
+    import scorecard.modeling as modeling
+    for gone in ("overall_curve", "apply_overall", "refit_overall_curve",
+                 "ANCHOR_OVERALL"):
+        assert not hasattr(modeling, gone), gone
 
 
 # ===========================================================================
@@ -88,29 +90,3 @@ def test_expected_final_strong_fit():
         model = expected_final(bid, v, VARIANCE_MID_FOR_ANCHORS, DRIFT)
         worst = max(worst, abs(model - exp_mid))
     assert worst < 0.06, worst
-
-
-# ===========================================================================
-# Overall curve reproduction with DEFAULT params (§2.5)
-# ===========================================================================
-def test_overall_curve_reproduces_6_of_7():
-    within2 = 0
-    for (firm, wavg, card, psf) in ANCHOR_OVERALL:
-        model = round(max(0, min(100, overall_curve(wavg, psf, CURVE))))
-        if abs(model - card) <= 2:
-            within2 += 1
-    assert within2 >= 6
-
-
-def test_overall_curve_premium_penalty_applies():
-    """A premium bidder (Crest, 252 $/SF) gets the price-value penalty -> 65 (§2.5)."""
-    model = round(overall_curve(72.0, 252, CURVE))
-    assert model == 65
-
-
-def test_overall_curve_defensive_no_penalty_deadband():
-    """A defensive bidder (Dorne, 215 $/SF < 234 premium floor) gets NO penalty
-    (§2.4 deadband)."""
-    # 70 + 0.62*(69.0-70) = 69.38 -> 69, no penalty
-    model = round(overall_curve(69.0, 215, CURVE))
-    assert model == 69

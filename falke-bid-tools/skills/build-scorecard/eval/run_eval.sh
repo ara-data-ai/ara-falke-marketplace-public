@@ -9,13 +9,34 @@
 #   bash eval/run_eval.sh
 # Exit 0 = pass, non-zero = fail (count of failed checks).
 #
+# Env:
+#   SCORECARD_PYTHON=/path/to/python   explicit engine-interpreter override
+#   REQUIRE_PHASE_B=1                  a missing Phase-B matrix fixture is a
+#                                      FAIL instead of a SKIP (release.sh sets
+#                                      this on the canonical-tree gate, where
+#                                      the untracked fixture must exist)
+#
 # Two phases:
 #   A. STATIC skill hygiene — frontmatter + progressive-disclosure structure +
-#      trigger / audit / upload-detection language.
-#   B. INVOCATION smoke — run the engine on the synthetic sample validation inputs
-#      (HTML-only so no PDF engine is required) and assert the artifacts exist
-#      and the run JSON carries a coverage flag, and that the audit step wrote
-#      audit_report.md (the audit is wired and default-ON in the engine).
+#      trigger / audit / upload-detection / scoring-gate language.
+#   B. INVOCATION smoke — full gated render (SF confirm + baseline confirm +
+#      both scoring inputs) on a synthetic producer-written fixture, HTML-only
+#      so no PDF engine is required; asserts the artifacts exist, the run JSON
+#      carries a coverage flag, the default-ON audit wrote audit_report.md,
+#      and the SF gate hard-stops AT THE SF GATE (stop message asserted).
+#
+# Phase-B fixture boundary (do not "upgrade" this in passing):
+#   The smoke runs against tests/fixtures/create_matrix_4bidders.xlsx — a fully
+#   SYNTHETIC workbook written by a v0.3-era run of the in-plugin matrix
+#   producer, now the scorecard suite's BACK-COMPAT pin (P0-2 landed: the LIVE
+#   cross-engine producer→parser compat gate is
+#   engines/scorecard/tests/test_producer_live_compat.py, which generates
+#   fresh workbooks with the CURRENT matrix engine on every pytest run and
+#   rides release.sh's existing pytest gates). This smoke stays on the pin —
+#   it tests the SKILL wiring, not producer freshness; the pytest gate owns
+#   freshness. The fixture is untracked-local by .gitignore (*.xlsx), so
+#   Phase B self-skips in the scrubbed release stage and in the public bundle;
+#   the canonical-tree release gate runs it with REQUIRE_PHASE_B=1.
 # =============================================================================
 set -u
 
@@ -28,9 +49,29 @@ RUNBOOK_MD="$SKILL_DIR/reference/runbook.md"
 # Bundle root is two levels up from skills/build-scorecard/.
 BUNDLE_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"
 ENGINE_DIR="$BUNDLE_ROOT/engines/scorecard"
-MATRIX="$ENGINE_DIR/examples/sample_matrix_fixture.xlsx"
+# Synthetic producer-written fixture (see the Phase-B boundary note above).
+MATRIX="$ENGINE_DIR/tests/fixtures/create_matrix_4bidders.xlsx"
 OUT="$(mktemp -d 2>/dev/null || echo /tmp/scorecard_eval_out)"
 mkdir -p "$OUT"
+
+# Engine interpreter — resolution order (each step named in failures):
+#   1. SCORECARD_PYTHON        explicit override (CI / dev machines)
+#   2. plugin venv             ${CLAUDE_PLUGIN_DATA}/venv/bin/python — what
+#                              scripts/bootstrap.sh installs and the runbook
+#                              mandates for real runs
+#   3. /usr/bin/python3        system fallback (canonical dev tree; bare
+#                              `python3` can resolve to a Homebrew build
+#                              without the engine deps — never use it)
+if [ -n "${SCORECARD_PYTHON:-}" ]; then
+  PYTHON_BIN="$SCORECARD_PYTHON"
+  PY_HOW="SCORECARD_PYTHON env override"
+elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -x "${CLAUDE_PLUGIN_DATA}/venv/bin/python" ]; then
+  PYTHON_BIN="${CLAUDE_PLUGIN_DATA}/venv/bin/python"
+  PY_HOW="plugin venv (\${CLAUDE_PLUGIN_DATA}/venv, bootstrap.sh)"
+else
+  PYTHON_BIN="/usr/bin/python3"
+  PY_HOW="system fallback /usr/bin/python3"
+fi
 
 FAIL=0
 pass() { echo "  PASS  $1"; }
@@ -111,23 +152,101 @@ if grep -iq "scorecard_summary" "$SKILL_MD" 2>/dev/null \
   pass "scorecard_summary artifact documented"
 else fail "scorecard_summary artifact not documented"; fi
 
+# A13: required scoring uploads + no-fallback — SKILL.md must document BOTH the
+#      --scoring-framework and --category-scores uploads AND the no-fallback
+#      hard-stop (the scorecard cannot be produced without the two files).
+if grep -iq -- "--scoring-framework" "$SKILL_MD" 2>/dev/null \
+   && grep -iq -- "--category-scores" "$SKILL_MD" 2>/dev/null \
+   && grep -iqE "no fallback|cannot be produced" "$SKILL_MD" 2>/dev/null; then
+  pass "scoring-framework + category-scores uploads + no-fallback documented in SKILL.md"
+else fail "scoring-framework / category-scores uploads / no-fallback not documented in SKILL.md"; fi
+
+# A14: scoring flags in the runbook command — the generic command in runbook.md
+#      must carry BOTH --scoring-framework and --category-scores.
+if grep -iq -- "--scoring-framework" "$RUNBOOK_MD" 2>/dev/null \
+   && grep -iq -- "--category-scores" "$RUNBOOK_MD" 2>/dev/null; then
+  pass "both scoring flags present in runbook.md command"
+else fail "runbook.md missing --scoring-framework / --category-scores"; fi
+
 
 echo ""
 echo "=== Phase B: invocation smoke (HTML-only) ==="
+echo "  engine interpreter: $PYTHON_BIN  [$PY_HOW]"
 
 if [ ! -f "$MATRIX" ]; then
-  echo "  SKIP  bundled eval fixture not present at:"
-  echo "        $MATRIX"
-  echo "        (Phase B is skipped; Phase A still gates. The fixture should be"
-  echo "         bundled at engines/scorecard/examples/sample_matrix_fixture.xlsx.)"
+  if [ -n "${REQUIRE_PHASE_B:-}" ]; then
+    fail "Phase B REQUIRED (REQUIRE_PHASE_B set) but the matrix fixture is missing: $MATRIX — regenerate it with tests/fixtures/_make_create_matrix_fixtures.py"
+  else
+    echo "  SKIP  Phase-B matrix fixture not present at:"
+    echo "        $MATRIX"
+    echo "        (Untracked-local by design — .gitignore excludes *.xlsx — so the"
+    echo "         scrubbed release stage and the public bundle skip Phase B; Phase A"
+    echo "         still gates. Regenerate on a dev machine with"
+    echo "         tests/fixtures/_make_create_matrix_fixtures.py.)"
+  fi
+elif ! "$PYTHON_BIN" -c "import yaml, openpyxl, jinja2" >/dev/null 2>&1; then
+  MISSING="$("$PYTHON_BIN" -c '
+import importlib.util as u
+print(", ".join(m for m in ("yaml", "openpyxl", "jinja2") if u.find_spec(m) is None))' 2>/dev/null \
+    || echo "interpreter did not run")"
+  fail "engine interpreter unusable: $PYTHON_BIN [$PY_HOW] is missing: ${MISSING:-unknown}. Set SCORECARD_PYTHON to a Python with the engine deps (engines/requirements.txt), or run the plugin bootstrap so \${CLAUDE_PLUGIN_DATA}/venv exists."
 else
-  ( cd "$ENGINE_DIR" && python3 -m scorecard.cli \
+  # Synthetic per-run scoring inputs, generated INTO THE TEMP DIR at eval time:
+  #   framework = the tracked scoring-framework-template.xlsx (it IS Falke's
+  #   current 8-category framework and parses valid as-is);
+  #   scores    = one 1-10 row per fixture firm (fully fictional), written here
+  #   so the untracked-xlsx rule never applies and the file can never go stale
+  #   against the fixture's firm list.
+  SCORES_XLSX="$OUT/eval_category_scores.xlsx"
+  "$PYTHON_BIN" - "$SCORES_XLSX" <<'PYEOF' > "$OUT/_eval_scores_gen.log" 2>&1
+import sys
+import openpyxl
+from openpyxl.styles import Font
+
+out_path = sys.argv[1]
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = "Category_Scores"
+labels = ["Pricing", "Scope", "Condo Exp", "CO Risk",
+          "Reputation", "Financial", "Controls", "Docs"]
+ws.cell(row=1, column=1,
+        value="DETAILED CATEGORY SCORES (1-10) — skill-eval smoke "
+              "(SYNTHETIC: fictional firms/figures)").font = Font(bold=True)
+for col, header in enumerate(["Firm"] + labels, start=1):
+    ws.cell(row=2, column=col, value=header).font = Font(bold=True)
+# The four synthetic firms in tests/fixtures/create_matrix_4bidders.xlsx,
+# exactly as the scorecard displays them (scores rows must match the scored
+# bidder field or the engine hard-stops — that gate is tested elsewhere).
+firms = {
+    "Alpine Restoration Group": [8, 8, 7, 7, 8, 7, 7, 8],
+    "Bayside Builders LLC":     [7, 7, 7, 6, 7, 7, 6, 7],
+    "Cypress Construction Co.": [6, 7, 6, 6, 6, 6, 6, 6],
+    "Driftwood Contractors":    [5, 6, 5, 5, 6, 5, 5, 5],
+}
+for row, (firm, scores) in enumerate(firms.items(), start=3):
+    ws.cell(row=row, column=1, value=firm)
+    for col, score in enumerate(scores, start=2):
+        ws.cell(row=row, column=col, value=score)
+wb.save(out_path)
+PYEOF
+  if [ -f "$SCORES_XLSX" ]; then
+    pass "synthetic category-scores xlsx generated for the fixture firms"
+  else
+    fail "could not generate the category-scores xlsx (see $OUT/_eval_scores_gen.log)"
+  fi
+
+  # B-positive: the full gated render — SF confirmed (accept the fixture's
+  # matrix GSF; an equal explicit --sf-basis would correctly trip audit C3),
+  # baseline confirmed, both scoring inputs supplied. --html-only so no PDF
+  # engine is required. The default-ON audit runs inside the engine.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
       --matrix "$MATRIX" \
-      --project-name "Sample Condominium · Lobby Renovation" \
-      --sf-basis 16000 --band-low 3.35 --band-high 3.55 --mid 3.40 \
+      --project-name "Eval Smoke Condo · Restoration" \
+      --sf-confirmed \
+      --band-low 1.05 --band-high 1.40 --mid 1.20 \
       --baseline examples/sample_baseline.json --baseline-confirmed \
-      --qual-notes examples/sample_qual_notes.json \
-      --aliases examples/sample_aliases.json \
+      --scoring-framework templates/scoring-framework-template.xlsx \
+      --category-scores "$SCORES_XLSX" \
       --out-dir "$OUT" --html-only ) > "$OUT/_eval.log" 2>&1
   RC=$?
   [ $RC -eq 0 ] && pass "engine exited 0" || fail "engine exited $RC (see $OUT/_eval.log)"
@@ -146,14 +265,20 @@ else
     fail "audit_report.md missing (audit step did not write it)"
   fi
 
-  # B-negative: missing --sf-basis MUST hard-stop (no matrix-GSF fallback).
-  ( cd "$ENGINE_DIR" && python3 -m scorecard.cli \
+  # B-negative: missing SF decision MUST hard-stop (no matrix-GSF fallback).
+  # Every other required input is supplied so the SF gate is the one under
+  # test; the stop message is asserted so a different gate can't false-pass
+  # this check.
+  ( cd "$ENGINE_DIR" && "$PYTHON_BIN" -m scorecard.cli \
       --matrix "$MATRIX" --project-name "x" \
-      --band-low 3.35 --band-high 3.55 --mid 3.40 \
-      --baseline examples/sample_baseline.json \
+      --band-low 1.05 --band-high 1.40 --mid 1.20 \
+      --baseline examples/sample_baseline.json --baseline-confirmed \
+      --scoring-framework templates/scoring-framework-template.xlsx \
+      --category-scores "$SCORES_XLSX" \
       --out-dir "$OUT" --html-only ) > "$OUT/_eval_neg.log" 2>&1
-  if [ $? -ne 0 ]; then pass "missing --sf-basis hard-stops (no silent fallback)"
-  else fail "missing --sf-basis did NOT stop the run"; fi
+  if [ $? -ne 0 ] && grep -q "SF basis not confirmed" "$OUT/_eval_neg.log" 2>/dev/null; then
+    pass "missing SF decision hard-stops at the SF gate (no silent fallback)"
+  else fail "missing SF decision did NOT stop at the SF gate (see $OUT/_eval_neg.log)"; fi
 fi
 
 echo ""

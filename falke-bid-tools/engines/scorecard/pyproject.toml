@@ -27,5 +27,9 @@ falke-scorecard = "scorecard.cli:main"
 include = ["scorecard*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# eval/ carries the local-only gold-reproduction suite (eval/golden/ — real
+# client fixtures, git-ignored). On a machine without the fixtures the golden
+# dir holds only its .gitignore and collects nothing, so the shipped/staged
+# tree runs tests/ alone (P0-1, Floyd consolidated ruling 2026-07-15).
+testpaths = ["tests", "eval"]
 addopts = "-q"

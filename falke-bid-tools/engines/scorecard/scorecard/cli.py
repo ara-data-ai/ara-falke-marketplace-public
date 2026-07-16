@@ -77,6 +77,19 @@ from .scoring_inputs import parse_category_scores, parse_scoring_framework
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Falke bid-comparison scorecard skill")
     ap.add_argument("--matrix", required=True, help="path to bid-comparison xlsx")
+    ap.add_argument("--sheet", default=None,
+                    help="EXPLICIT sheet to consume (overrides the default). "
+                         "Default (Marvin P0-7 ruling): the Leveled_Normalized "
+                         "view when present — the apples-to-apples board "
+                         "comparison basis; a single-sheet legacy matrix uses "
+                         "its only sheet; a producer workbook missing the "
+                         "leveled view hard-stops (exit 2). Use --sheet "
+                         "Bid_Form ONLY for reconciliation/verification, "
+                         "dispute support, or debugging — a mirror run is an "
+                         "internal artifact, never the board deliverable when "
+                         "a leveled sheet exists. The consumed sheet + its "
+                         "disclosure line are printed on the card and recorded "
+                         "in scorecard_run.json.")
     ap.add_argument("--config", default=None, help="path to scorecard_config.yaml")
     # REQUIRED parameters (also can live in config run_inputs)
     ap.add_argument("--sf-basis", type=float, default=None,
@@ -163,8 +176,10 @@ def main(argv=None) -> int:
                     help="PDF engine (default chromium — installed in Falke env; "
                          "weasyprint is an optional alternative)")
     ap.add_argument("--refit", action="store_true",
-                    help="re-fit Section C + Overall curve with scipy and print "
-                         "vs Darvish ranges (FIRST build step)")
+                    help="re-fit the Section C models (volatility + drift) "
+                         "with scipy and print vs Darvish ranges (FIRST build "
+                         "step). The Overall presentation curve is RETIRED "
+                         "(P0-6) — Overall is the honest weighted average.")
     ap.add_argument("--html-only", action="store_true",
                     help="emit HTML, skip PDF (useful when no PDF engine)")
     ap.add_argument("--audit", dest="audit", action="store_true", default=True,
@@ -327,7 +342,8 @@ def main(argv=None) -> int:
             preview = preview_baseline(
                 args.matrix, cfg,
                 baseline_lines=_baseline_lines if _baseline_is_xlsx
-                               else _load_json(args.baseline))
+                               else _load_json(args.baseline),
+                sheet=args.sheet)
         except ScorecardError as e:
             print(f"[STOP] {e}", file=sys.stderr)
             return 2
@@ -373,6 +389,7 @@ def main(argv=None) -> int:
             project_name=args.project_name,
             framework=framework,
             category_scores=category_scores,
+            sheet=args.sheet,
         )
     except ScorecardError as e:
         print(f"[STOP] {e}", file=sys.stderr)
@@ -401,6 +418,9 @@ def main(argv=None) -> int:
             "run_id": result["meta"]["run_id"],
             "full_coverage": result["full_coverage"],
             "overall_label": result["overall_label"],
+            # consumed-sheet provenance (Marvin P0-7): name, mode, and the
+            # exact disclosure line the card renders.
+            "sheet": result.get("sheet"),
             "log": result["log"],
             "bidders": [{
                 "name": b["name"], "rank": b["rank"], "total": b["total"],

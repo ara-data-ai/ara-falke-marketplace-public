@@ -92,18 +92,13 @@ drift:
   band_floor: 0.05      # $M minimum display band half-extent
 
 # -----------------------------------------------------------------------------
-# OVERALL /100 presentation curve (Darvish §2). OPT-IN, LABELED, gated on 100%
-# qualitative coverage. Default = OFF (ship honest weighted average).
-# Overall = anchor + k * (wavg - anchor) - penalty
+# OVERALL /100 — the HONEST WEIGHTED AVERAGE, period. The former presentation
+# curve (compression + price-value penalty + tier_bonus) was RETIRED under
+# P0-6 (Floyd consolidated ruling verdict d, Derick-confirmed): it could
+# re-order the award ranking, which makes it scoring, not presentation. The
+# historical coefficients live on ONLY as golden eval data
+# (eval/golden/gold_data.py) for historical-card reproduction.
 # -----------------------------------------------------------------------------
-overall_curve:
-  apply_curve: false    # DEFAULT: honest weighted average is the primary number
-  anchor: 70            # crossover where delta ~ 0 (the defensive-tier anchor)
-  k_low: 0.62           # floor-up strength below anchor
-  k_high: 1.18          # mild upward stretch above anchor
-  pen_coef: 0.39        # pts per $/SF above premium_floor (premium-tier fit)
-  premium_floor: 234    # $/SF deadband; DEFENSIVE bidders not penalized
-  tier_bonus: {}        # optional per-bidder manual promotion (e.g. {"Cascade": 5}); default empty, logged
 
 # -----------------------------------------------------------------------------
 # SCORING WEIGHTS — Marvin §6, static config. Must sum to 1.0.
@@ -168,7 +163,12 @@ llm:
 # case/space-insensitively; rows/cols are DETECTED, not hard-coded.
 # -----------------------------------------------------------------------------
 matrix:
-  sheet_name: null                       # null = use first/only sheet
+  # null = the RULED default (Marvin P0-7): consume 'Leveled_Normalized' when
+  # present (the apples-to-apples decision view); a single-sheet legacy matrix
+  # uses its only sheet; a producer workbook missing the leveled view HARD-
+  # STOPS. Never "first sheet in the workbook". Explicit value (or the CLI
+  # --sheet flag, which wins) selects a sheet for reconciliation/debug runs.
+  sheet_name: null
   header_row_hint: null                  # null = auto-detect bidder-name row
   block_subheaders: ["COST", "COST SUBTOTALS", "$/SF", "$/SF SUBTOTALS"]
   grand_total_label: "GRAND TOTAL CONSTRUCTION COST"
@@ -180,7 +180,7 @@ matrix:
 # DISPLAY-NAME ALIASES (Marvin §1.5) — optional, DEFAULT EMPTY.
 # Map a raw/normalized matrix firm name to the short name shown on the board
 # scorecard. The raw matrix name is ALWAYS retained in the run log for audit;
-# only the DISPLAYED name (and the name overrides/tier_bonus key off) changes.
+# only the DISPLAYED name (and the name overrides key off) changes.
 # Duplicate detection is unaffected (it keys off the raw normalized name).
 # Caller-supplied --aliases / aliases= merges OVER this block (caller wins).
 # Example (synthetic sample board card):

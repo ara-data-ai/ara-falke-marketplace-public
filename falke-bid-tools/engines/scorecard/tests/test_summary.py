@@ -4,7 +4,7 @@ Drives summary.build_summary_context with SYNTHETIC pipeline-result fixtures
 (no client xlsx required) across the rubric's branch cases:
   - clear winner (gap >= 5 -> decisive language)
   - neck-and-neck (gap < 5 -> close-call language)
-  - provisional coverage (full_coverage False -> provisional framing, curve held)
+  - provisional coverage (full_coverage False -> provisional framing)
   - RISK-tier top bid (guardrail framing, NOT a recommendation)
   - the 3 mandatory caveats always present
 Plus: the winner is framed as BEST VALUE (not lowest price), and the summary
@@ -22,7 +22,7 @@ from scorecard.summary import build_summary_context
 # Synthetic result builder — mirrors pipeline.run_scorecard()'s output shape.   #
 # --------------------------------------------------------------------------- #
 def _bidder(name, rank, tier, total, per_sf, overall_numeric, overall_display,
-            coverage=1.0, applied=True, variance_text=None):
+            coverage=1.0, variance_text=None):
     return {
         "name": name,
         "rank": rank,
@@ -36,8 +36,8 @@ def _bidder(name, rank, tier, total, per_sf, overall_numeric, overall_display,
         "overall": {
             "numeric": overall_numeric,
             "display": overall_display,
+            "weighted_average": overall_numeric,
             "coverage": coverage,
-            "applied": applied,
         },
     }
 
@@ -52,11 +52,10 @@ def _result(bidders, *, full_coverage=True, overall_label=None,
         for b in sorted(bidders, key=lambda b: b["rank"])
     ]
     if overall_label is None:
-        overall_label = ("Overall = applied PRESENTATION ADJUSTMENT (compression "
-                         "+ price-value penalty); raw weighted average alongside."
+        overall_label = ("Overall = honest weighted average (deterministic)."
                          if full_coverage else
-                         "Overall = honest weighted average (PROVISIONAL — curve "
-                         "withheld until qualitative coverage = 100%).")
+                         "Overall = honest weighted average (PROVISIONAL — "
+                         "qualitative coverage below 100%).")
     return {
         "meta": {
             "run_id": "deadbeef0001",
@@ -102,12 +101,12 @@ def _neck_and_neck_result():
 
 
 def _provisional_result():
-    # full_coverage False: provisional framing, curve withheld.
+    # full_coverage False: provisional framing.
     return _result([
         _bidder("Acme", 1, "TOP", 3360000, 210, 83, "83* (prov., 75% coverage)",
-                coverage=0.75, applied=False),
+                coverage=0.75),
         _bidder("Cascade", 2, "MID", 3050000, 191, 70, "70* (prov., 50% coverage)",
-                coverage=0.50, applied=False),
+                coverage=0.50),
     ], full_coverage=False)
 
 
@@ -159,7 +158,7 @@ def test_neck_and_neck_close_call_language():
     assert "acme" in bottom and "borealis" in bottom
 
 
-def test_provisional_coverage_framing_and_curve_withheld():
+def test_provisional_coverage_framing():
     ctx = build_summary_context(_provisional_result())
     rationale = ctx["winner_rationale"].lower()
     bottom = ctx["bottom_line"].lower()
@@ -167,9 +166,9 @@ def test_provisional_coverage_framing_and_curve_withheld():
     # front-runner on a provisional score, not a settled recommendation
     assert "front-runner" in rationale or "provisional" in rationale
     assert "provisional" in bottom and "front-runner" in bottom
-    # the provisional caveat is present and the curve note is NOT (curve withheld)
+    # the provisional caveat is present; no curve language exists anymore
     assert "provisional" in caveats
-    assert "held back" in caveats
+    assert "ranking could shift" in caveats
     assert "adjusted for presentation" not in caveats
 
 
@@ -187,25 +186,39 @@ def test_risk_tier_top_guardrail_not_recommendation():
     assert "before treating any bid" in bottom
 
 
-def test_three_mandatory_caveats_always_present():
+def test_mandatory_caveats_always_present():
     # Across clear-winner, provisional, and RISK results, the always-on caveats
-    # (bid-derived baseline, informed judgment, informs-not-decides, no legal
-    # advice) must appear every time.
+    # (NEUTRAL baseline provenance (P0-5), informed judgment, informs-not-
+    # decides, no legal advice) must appear every time.
     for r in (_clear_winner_result(), _provisional_result(), _risk_top_result(),
               _neck_and_neck_result()):
         caveats = " ".join(build_summary_context(r)["caveats"]).lower()
-        assert "bids themselves as a reference" in caveats         # (a) baseline
+        assert "supplied and confirmed by the reviewer" in caveats  # (a) neutral
+        assert "does not verify how that baseline was built" in caveats
         assert "professional judgment" in caveats                  # (c) judgment
         assert "does not award the contract" in caveats            # (d) informs
         assert "nothing here is legal advice" in caveats           # (e) legal
 
 
-def test_curve_caveat_present_when_curve_applied_full_coverage():
-    ctx = build_summary_context(_clear_winner_result())  # full coverage, curve on
+def test_no_provenance_claim_in_any_caveat():
+    """P0-5: the summary must claim NOTHING about how the baseline was built
+    — neither 'independent estimate' nor 'built from the bids' — unless the
+    evidence-based fingerprint sentence fires."""
+    for r in (_clear_winner_result(), _provisional_result(), _risk_top_result()):
+        text = " ".join(build_summary_context(r)["caveats"]).lower()
+        assert "independent estimate" not in text
+        assert "independently modeled" not in text
+        assert "bids themselves" not in text
+
+
+def test_no_curve_caveat_ever_and_no_provisional_note_at_full_coverage():
+    """P0-6: the curve is retired — no presentation-adjustment caveat can
+    render; a fully-covered run carries no provisional note either."""
+    ctx = build_summary_context(_clear_winner_result())  # full coverage
     caveats = " ".join(ctx["caveats"]).lower()
-    assert "adjusted for presentation" in caveats
-    # and the provisional note is absent on a fully-covered run
-    assert "held back" not in caveats
+    assert "adjusted for presentation" not in caveats
+    assert "presentation adjustment" not in caveats
+    assert "provisional" not in caveats
 
 
 def test_fingerprint_appends_honest_baseline_note():

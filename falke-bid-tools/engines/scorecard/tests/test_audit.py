@@ -1,4 +1,4 @@
-"""Self-audit tests (Marvin's rubric C1..C16).
+"""Self-audit tests (Marvin's rubric C1..C16 + the P0-7 checks C17/C18).
 
 Every check has >=1 PASS case (on a clean synthetic run) and >=1 FAIL/WARN case
 (on a deliberately broken input). Fixtures are SYNTHETIC (a 4-bidder matrix
@@ -108,7 +108,7 @@ def test_artifacts_written(tmp_path):
     assert os.path.exists(paths["audit_json"])
     data = json.load(open(paths["audit_json"]))
     assert data["verdict"] in (A.V_PASS, A.V_WARN, A.V_FAIL)
-    assert len(data["checks"]) == 16
+    assert len(data["checks"]) == 18   # C1..C16 + C17/C18 (P0-7)
     md = open(paths["report_md"]).read()
     assert "Overall verdict:" in md
     assert "## Checks" in md
@@ -466,23 +466,27 @@ def test_c10_fail_silent_drop(tmp_path):
 
 
 # ============================================================================
-# C11 — Curve labeling
+# C11 — Overall = honest weighted average (curve retired, P0-6)
 # ============================================================================
-def test_c11_pass_curve_off(tmp_path):
+def test_c11_pass_overall_is_raw_wavg(tmp_path):
+    """Clean run: every emitted Overall re-derives as the raw weighted average
+    of its category scores."""
     result, cfg = _run(tmp_path)
-    assert A.check_c11(result["parsed"], cfg, result).status == A.PASS
+    c = A.check_c11(result["parsed"], cfg, result)
+    assert c.status == A.PASS, c.verdict_line
 
 
-def test_c11_fail_curve_unlabeled(tmp_path):
+def test_c11_fail_adjusted_overall_blocks(tmp_path):
+    """Anything that nudges the ranked number away from the recomputed raw
+    weighted average (a resurrected curve, a bonus, a manual edit) is a
+    BLOCKER — P0-6, Floyd verdict d."""
     result, cfg = _run(tmp_path)
     r = copy.deepcopy(result)
     r["parsed"] = result["parsed"]
-    for b in r["bidders"]:
-        b["overall"]["applied"] = True
-        b["overall"]["weighted_average"] = 70
-    r["overall_label"] = "Overall = deterministic."   # no presentation-adjustment label
+    b = r["bidders"][0]
+    b["overall"]["numeric"] = (b["overall"]["numeric"] or 0) + 5.0  # "adjusted"
     c = A.check_c11(r["parsed"], cfg, r)
-    assert c.status == A.FAIL and c.severity == A.WARN
+    assert c.status == A.FAIL and c.severity == A.BLOCKER
 
 
 # ============================================================================

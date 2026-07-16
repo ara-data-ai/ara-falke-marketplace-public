@@ -41,9 +41,9 @@ def _per_sf_int(per_sf) -> str:
 
 
 def _overall_display(b: Dict) -> str:
-    """The Overall the card shows for this bidder (curved if applied, else the
-    weighted average; provisional marker preserved). Reuses the pipeline's own
-    display string — never recomputed here."""
+    """The Overall the card shows for this bidder (the honest weighted
+    average; provisional marker preserved). Reuses the pipeline's own display
+    string — never recomputed here."""
     return b["overall"].get("display", "—")
 
 
@@ -72,8 +72,8 @@ def _winner_rationale(w: Dict, *, provisional: bool, close_call: bool,
     if tier == TIER_RISK:
         return (
             f"{name} ranks first on the numbers, but at {money} "
-            f"(about ${psf}/SF) their price sits materially below the cost we "
-            f"independently modeled for this scope. A gap that size usually "
+            f"(about ${psf}/SF) their price sits materially below the modeled "
+            f"cost baseline confirmed for this run. A gap that size usually "
             f"means scope was excluded or margin was compressed, not that the "
             f"work is genuinely cheaper. We do not treat this as a "
             f"recommendation: ARA recommends the board resolve the scope "
@@ -97,8 +97,8 @@ def _winner_rationale(w: Dict, *, provisional: bool, close_call: bool,
     if tier == TIER_TOP:
         why = (
             f"{name} is our recommended best value. Their price of {money} "
-            f"(about ${psf}/SF) lands right on the cost we independently "
-            f"modeled for this scope — neither padded with premium nor cut so "
+            f"(about ${psf}/SF) lands right on the modeled cost baseline "
+            f"for this scope — neither padded with premium nor cut so "
             f"thin that work looks to be missing. That balance is the single "
             f"best signal a bid is realistic and likely to hold through "
             f"construction without a wave of change orders."
@@ -212,53 +212,46 @@ def _sf_basis_text(result: Dict) -> str:
 
 
 def _build_caveats(result: Dict) -> List[str]:
-    """The board-facing disclosures (rubric §6). Order: baseline-derived (a),
-    curve-or-provisional (b), judgment (c), informs-not-decides (d), no-legal-
-    advice (e). (a),(c),(d),(e) are ALWAYS present; (b) flips between the curve
-    note and the provisional note by coverage; a conflict-of-interest line is
-    NOT speculated here (rubric §6 only adds it on a real signal)."""
+    """The board-facing disclosures (rubric §6). Order: baseline provenance (a),
+    provisional coverage (b, conditional), judgment (c), informs-not-decides
+    (d), no-legal-advice (e), consumed-sheet disclosure (f, when the run
+    recorded one). (a),(c),(d),(e) are ALWAYS present; a conflict-of-interest
+    line is NOT speculated here (rubric §6 only adds it on a real signal)."""
     caveats: List[str] = []
 
-    # (a) ALWAYS — the baseline is bid-derived, not an independent yardstick.
+    # (a) ALWAYS — baseline provenance, stated NEUTRALLY (P0-5): the tool
+    # cannot know how the baseline was built, so it claims nothing about that
+    # either way. Only the fingerprint check adds an EVIDENCE-BASED sentence.
+    # [P1-6 seam] When the declared-provenance input lands, this language keys
+    # off the owner's declaration instead of staying neutral.
     baseline_caveat = (
-        "Our cost baseline was built using the bids themselves as a reference, "
-        "not from a fully independent estimate. So treat it as a sensible "
-        "reference point for comparing the bids to each other — not as an "
-        "outside, second-opinion price. If the board wants a truly independent "
-        "check, that would be a separate estimate."
+        "Every bid is measured against a modeled cost baseline supplied and "
+        "confirmed by the reviewer for this run. The tool does not verify how "
+        "that baseline was built, so treat it as the comparison yardstick for "
+        "reading the bids against each other — not as an outside, "
+        "second-opinion price."
     )
     fingerprints = result.get("fingerprints") or []
     if fingerprints:
         h = fingerprints[0]
         baseline_caveat += (
-            f" In fact, the tool detected that the baseline line "
+            f" One thing the tool did detect: the baseline line "
             f"'{h.baseline_label}' matches {h.bidder_name}'s number very "
-            f"closely, which is why we say the baseline leans on the bids "
-            f"rather than standing apart from them."
+            f"closely, which can mean the baseline leans on the bids rather "
+            f"than standing apart from them — the board should read it with "
+            f"that in mind."
         )
     caveats.append(baseline_caveat)
 
-    # (b) CONDITIONAL — provisional note when coverage is incomplete, else the
-    # presentation-curve note when a curve was applied. (When neither, omit (b).)
+    # (b) CONDITIONAL — provisional note when coverage is incomplete.
     full_coverage = bool(result.get("full_coverage", False))
-    overall_label = result.get("overall_label", "") or ""
     if not full_coverage:
         coverages = [b["overall"].get("coverage", 1.0) for b in result["bidders"]]
         worst_pct = min(coverages) * 100 if coverages else 0
         caveats.append(
             f"These overall scores are provisional — the qualitative review was "
             f"only about {worst_pct:.0f}% complete for some bidders, so the "
-            f"presentation adjustment was held back and the ranking could shift "
-            f"once the review is finished."
-        )
-    elif "PRESENTATION ADJUSTMENT" in overall_label:
-        caveats.append(
-            "The single 'overall' number you see has been adjusted for "
-            "presentation — it spreads the field out and applies a value "
-            "penalty to the most expensive bid so the comparison reads clearly. "
-            "The raw, unadjusted scores are shown alongside in the full "
-            "scorecard. The adjustment changes how the scores display, not who "
-            "ranks where on the underlying work."
+            f"ranking could shift once the review is finished."
         )
 
     # (c) ALWAYS — qualitative scores are informed judgment.
@@ -282,6 +275,12 @@ def _build_caveats(result: Dict) -> List[str]:
         "contract terms, or statutory compliance should go to the "
         "association's attorney."
     )
+
+    # (f) consumed-sheet disclosure (Marvin P0-7): the same line the card
+    # carries, so the summary travels with its own provenance too.
+    sheet = result.get("sheet") or {}
+    if sheet.get("disclosure"):
+        caveats.append(sheet["disclosure"])
     return caveats
 
 

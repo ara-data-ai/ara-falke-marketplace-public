@@ -35,14 +35,15 @@ class GrandTotalNotFoundError(MatrixStructureError):
     """
 
 
+class ProducerVersionError(MatrixStructureError):
+    """The workbook's producer stamp is outside the scorecard's supported
+    range (SUPPORTED_PRODUCER), or names an unknown producer. A newer matrix
+    format may carry changes this parser has not been validated against —
+    refuse rather than mis-parse (Floyd consolidated ruling, verdict f)."""
+
+
 class ConfigError(ScorecardError):
     """The config block is malformed (e.g. weights do not sum to 1.0)."""
-
-
-class CoverageError(ScorecardError):
-    """The Overall presentation curve was requested without 100% qualitative
-    coverage. The curve is calibrated on full 8-category averages and MUST NOT
-    be applied to a provisional/partial score (Darvish §3.4)."""
 
 
 class RenderError(ScorecardError):

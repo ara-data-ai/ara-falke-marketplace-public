@@ -341,5 +341,8 @@ def build_context(result: Dict, cfg: Config) -> Dict:
         "hierarchy_items": hierarchy_items,
         "disclosures_title": "H. Disclosures & Data Notes",
         "disclosures": build_disclosures(result, cfg),
+        # consumed-sheet disclosure (Marvin P0-7 ruling): renders on the card
+        # UNCONDITIONALLY, in every mode — even a leaked draft carries it.
+        "sheet_disclosure": (result.get("sheet") or {}).get("disclosure", ""),
         "footer_note": meta["footer_note"],
     }

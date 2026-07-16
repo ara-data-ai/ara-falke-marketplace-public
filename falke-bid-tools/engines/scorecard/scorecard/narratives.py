@@ -8,8 +8,40 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+from .matrix import MODE_LEGACY, MODE_LEVELED, MODE_MIRROR
 from .mechanical import (TIER_DEFENSIVE, TIER_MID, TIER_PREMIUM, TIER_RISK,
                          TIER_TOP)
+
+# ----------------------------------------------------------------------------
+# Consumed-sheet disclosure — Marvin's P0-7 ruling, EXACT board-facing lines.
+# Rendered ON the card (provenance footer) in every mode and recorded in
+# scorecard_run.json; the mirror line renders unconditionally so even a leaked
+# draft carries its own warning (hard rule 3).
+# ----------------------------------------------------------------------------
+SHEET_DISCLOSURES = {
+    MODE_LEVELED: (
+        "Comparison figures are read from the workbook's Leveled/Normalized "
+        "view — bids normalized to Falke's bid-leveling program (canonical "
+        "trade classification). Grand totals are as submitted by each bidder "
+        "and are verified identical to the as-submitted bid forms; leveling "
+        "reclassifies line items between trades, it does not change any "
+        "bidder's price. The as-submitted figures are preserved on the Bid "
+        "Form sheet of the same workbook."
+    ),
+    MODE_MIRROR: (
+        "Comparison figures are read from the as-submitted Bid Form mirror — "
+        "NO leveling applied. Trade-level (division) figures reflect each "
+        "bidder's own classification and are NOT apples-to-apples across "
+        "bidders. This view is for reconciliation and verification; it is not "
+        "the standard board comparison view."
+    ),
+    MODE_LEGACY: (
+        "Comparison figures are read from the bid tabulation as submitted; "
+        "this matrix predates Falke's leveling-program format and no "
+        "normalization view exists. Trade-level comparisons should be read "
+        "with that limitation."
+    ),
+}
 
 # Section B "quick read" — templated per tier (Marvin §4.2)
 TIER_QUICK_READ = {

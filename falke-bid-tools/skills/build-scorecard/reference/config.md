@@ -14,9 +14,11 @@ orients you.
   config ships these BLANK (null) on purpose, so every project is forced to
   supply its own via CLI flags or its own `--config` file.
 - **Config (tunable model, rarely changed):** tier fractions, the Section C
-  volatility/drift coefficients, the Overall presentation curve (`apply_curve`
-  default `false`), scoring weights, score anchors, QA tolerances, LLM rubric
-  settings, and matrix-parse labels.
+  volatility/drift coefficients, scoring weights, score anchors, QA
+  tolerances, LLM rubric settings, and matrix-parse labels (including
+  `matrix.sheet_name` — null = the ruled Leveled_Normalized default per
+  Marvin P0-7; the CLI `--sheet` flag wins). The former Overall presentation
+  curve block is RETIRED (P0-6): Overall is the honest weighted average.
 
 ## To retune
 

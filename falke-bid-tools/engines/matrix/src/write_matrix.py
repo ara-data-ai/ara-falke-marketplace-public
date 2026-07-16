@@ -75,6 +75,30 @@ NOTE_COL = 3
 # RunInputs still produces a generic, non-client-specific title.
 DEFAULT_SF_BASIS_LABEL = "GSF"
 
+# ---------------------------------------------------------------------------
+# Producer stamp (Floyd consolidated ruling 2026-07-15, verdict f — P0 wave 2)
+# ---------------------------------------------------------------------------
+# Written as workbook CUSTOM DOCUMENT PROPERTIES (invisible — never visible
+# geometry) so the consuming scorecard can check the workbook against its
+# SUPPORTED_PRODUCER range (engines/scorecard/scorecard/matrix.py).
+# RELEASE.md step-2 TRIPWIRE: any minor+ (format-changing) release must bump
+# PRODUCER_FORMAT_VERSION here AND revisit the scorecard's SUPPORTED_PRODUCER
+# range in the same commit.
+PRODUCER_NAME = "falke-bid-tools/matrix"
+PRODUCER_FORMAT_VERSION = "0.4.0"
+STAMP_PRODUCER_PROP = "falke_bid_tools.producer"
+STAMP_FORMAT_PROP = "falke_bid_tools.format_version"
+
+
+def _stamp_workbook(wb: openpyxl.Workbook) -> None:
+    """Stamp producer + format version as custom doc properties (additive; no
+    cell, row, or sheet is touched)."""
+    from openpyxl.packaging.custom import StringProperty
+    wb.custom_doc_props.append(
+        StringProperty(name=STAMP_PRODUCER_PROP, value=PRODUCER_NAME))
+    wb.custom_doc_props.append(
+        StringProperty(name=STAMP_FORMAT_PROP, value=PRODUCER_FORMAT_VERSION))
+
 # Column widths
 COL_A_WIDTH: float = 15.0
 COL_B_WIDTH: float = 45.0
@@ -2488,7 +2512,9 @@ def write_matrix(
     if audit_items:
         _write_audit_sheet(wb, audit_items)
 
-    # Step 9: Save
+    # Step 9: Stamp producer/format-version (invisible custom doc properties —
+    # the scorecard's SUPPORTED_PRODUCER check reads this; verdict f) + save
+    _stamp_workbook(wb)
     wb.save(output_path)
     print(f"  [write_matrix] Saved fresh workbook → {output_path}")
     print(f"  [write_matrix] Sheet dimensions: "

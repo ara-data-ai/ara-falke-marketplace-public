@@ -13,7 +13,7 @@ from scorecard.matrix import MatrixParser, apply_display_aliases
 from scorecard.pipeline import run_scorecard
 from .conftest import (BASELINE_JSON, DROPPED, GOLD_ALIASES, GOLD_EXCLUSIONS,
                        GOLD_OVERALL, GOLD_OVERRIDES_JSON, GOLD_PER_SF,
-                       GOLD_RANK_ORDER, GOLD_TIERS, GOLD_TOTALS, SAMPLE_XLSX)
+                       GOLD_TIERS, GOLD_TOTALS, SAMPLE_XLSX)
 
 import json
 import os
@@ -170,48 +170,19 @@ def test_end_to_end_per_sf_tiers_and_ranking():
 
 
 @requires_xlsx
-def test_curve_with_published_wavg_reproduces_gold_card_and_ranking():
-    """Drive the §2 curve with the PUBLISHED wavg/$/SF pairs (Darvish §2.2) and
-    confirm it reproduces the sample card Overall (within +/-2, Cascade via
-    tier_bonus) AND the gold ranking order.
+def test_raw_wavg_is_the_overall_contract():
+    """P0-6: the Overall presentation curve is RETIRED. The published raw
+    wavg column IS the Overall contract now — descending GOLD_WAVG gives the
+    honest ranking order (Crest raw #3, which the retired curve demoted to
+    #5 via the $/SF penalty — the reordering that killed it)."""
+    from .conftest import GOLD_RANK_ORDER_RAW, GOLD_WAVG
 
-    Rationale: the exact per-category 1-10 card values are NOT published in the
-    specs (only the wavg column). So we test the curve faithfully against the
-    published wavg rather than fabricating category vectors we cannot source.
-    The $/SF here are the skill's OWN parsed values (gold-matched in the test
-    above), closing the loop matrix -> $/SF -> curve.
-    """
-    from scorecard.modeling import overall_curve
-
-    cfg = _cfg()
-    cfg.raw["overall_curve"]["apply_curve"] = True
-    curve_cfg = cfg.block("overall_curve")
-    tier_bonus = {"Cascade": 5}  # bespoke Value-Tier promotion (Darvish §2.5)
-
-    # published wavg (Darvish §2.2); $/SF are the skill's parsed gold values
-    pubs = {
-        "Acme": (82.0, GOLD_PER_SF["Acme"]),
-        "Borealis": (80.0, GOLD_PER_SF["Borealis"]),
-        "Cascade": (70.0, GOLD_PER_SF["Cascade"]),
-        "Dorne": (69.0, GOLD_PER_SF["Dorne"]),
-        "Crest": (72.0, GOLD_PER_SF["Crest"]),
-        "Fjord": (47.0, GOLD_PER_SF["Fjord"]),
-        "Granite": (39.0, GOLD_PER_SF["Granite"]),
-    }
-    gold_card = dict(GOLD_OVERALL)
-
-    curved = {}
-    for name, (wavg, psf) in pubs.items():
-        val = overall_curve(wavg, psf, curve_cfg) + tier_bonus.get(name, 0)
-        curved[name] = max(0, min(100, round(val)))
-
-    # reproduce sample card Overall within +/-2
-    for name, card in gold_card.items():
-        assert abs(curved[name] - card) <= 2, f"{name}: {curved[name]} vs {card}"
-
-    # ranking by curved Overall == gold order
-    order = sorted(curved, key=lambda n: -curved[n])
-    assert order == GOLD_RANK_ORDER, (order, curved)
+    order = sorted(GOLD_WAVG, key=lambda n: -GOLD_WAVG[n])
+    assert order == GOLD_RANK_ORDER_RAW
+    assert order.index("Crest") == 2
+    # and the engine no longer carries a curve to apply
+    import scorecard.modeling as modeling
+    assert not hasattr(modeling, "overall_curve")
 
 
 @requires_xlsx
@@ -261,22 +232,16 @@ def test_exclusion_ruling_curates_seven_bidder_field():
 
 
 @requires_xlsx
-def test_full_gold_card_reproduction_curve_on_100pct_coverage():
-    """Item 4: the FULL sample card reproduces end-to-end when (a) Harbor +
-    Borealis are excluded (§1.4 ruling), (b) the published Section-E 1-10
-    category scores are supplied as overrides (=> 100% coverage), and (c) the
-    Overall presentation curve is ENABLED. Asserts the curated field is exactly
-    the 7, the ranking order matches the sample card, and every curved Overall is
-    within Darvish's +/-2.5 tolerance of the published value.
+def test_full_reproduction_raw_wavg_on_100pct_coverage():
+    """THE CURRENT CONTRACT (post-P0-6): with (a) Harbor + Borealis excluded
+    (§1.4 ruling) and (b) the published Section-E 1-10 category scores supplied
+    as overrides (=> 100% coverage), every bidder's Overall IS the honest
+    weighted average — reproducing the published wavg within +/-2.5 — and the
+    ranking follows it (raw order; the retired curve's reordering must NOT
+    reproduce)."""
+    from .conftest import GOLD_RANK_ORDER_RAW, GOLD_WAVG
 
-    Cascade is the DOCUMENTED bespoke Value-Tier outlier (Darvish modeling-spec
-    §2.5): its 75 is a +5 manual tier_bonus on top of the curve, NOT produced by
-    the curve from its wavg (70.0). We supply that tier_bonus via config (the
-    sanctioned channel) — we do NOT hand-hack the curve coefficients (modeling.py
-    is Darvish's and stays as-is)."""
     cfg = _cfg()
-    cfg.raw["overall_curve"]["apply_curve"] = True
-    cfg.raw["overall_curve"]["tier_bonus"] = {"Cascade": 5}  # documented §2.5 promotion
 
     with open(GOLD_OVERRIDES_JSON, "r", encoding="utf-8") as fh:
         overrides = json.load(fh)
@@ -293,29 +258,20 @@ def test_full_gold_card_reproduction_curve_on_100pct_coverage():
     by_name = {b["name"]: b for b in result["bidders"]}
 
     # curated field == exactly the 7 scored bidders
-    assert set(by_name) == set(GOLD_OVERALL.keys()), set(by_name)
+    assert set(by_name) == set(GOLD_WAVG.keys()), set(by_name)
 
-    # 100% qualitative coverage => curve actually applied (not provisional)
-    for name in GOLD_OVERALL:
+    # 100% qualitative coverage; Overall == the raw weighted average
+    for name in GOLD_WAVG:
         ov = by_name[name]["overall"]
         assert ov["coverage"] >= 0.999, (name, ov["coverage"])
-        assert ov["applied"] is True, (name, ov)
+        assert ov["numeric"] == ov["weighted_average"], (name, ov)
     assert result["full_coverage"] is True
 
-    # ranking order matches the sample card exactly
-    order = [r["name"] for r in result["ranking"]]
-    assert order == GOLD_RANK_ORDER, order
-
-    # curved Overall reproduces the sample card within +/-2.5 (Darvish tolerance).
-    # Cascade's 75 includes the documented +5 tier_bonus; if the curve+bonus still
-    # cannot reach 75 within tolerance it is asserted against the DOCUMENTED
-    # value (the bespoke outlier) — not patched by editing the curve.
+    # Overall reproduces the published wavg within +/-2.5; ranking is raw
     TOL = 2.5
-    for name, gold in GOLD_OVERALL.items():
-        curved = by_name[name]["overall"]["numeric"]
-        assert curved is not None, name
-        assert abs(curved - gold) <= TOL, (
-            f"{name}: curved Overall {curved} vs gold {gold} "
-            f"(delta {curved - gold:+.1f}, tol +/-{TOL}). "
-            f"NOTE: Cascade is the documented §2.5 bespoke outlier reached via the "
-            f"+5 tier_bonus; do NOT hand-hack the curve to close any gap.")
+    for name, wavg_gold in GOLD_WAVG.items():
+        got = by_name[name]["overall"]["numeric"]
+        assert got is not None, name
+        assert abs(got - wavg_gold) <= TOL, (name, got, wavg_gold)
+    order = [r["name"] for r in result["ranking"]]
+    assert order == GOLD_RANK_ORDER_RAW, order

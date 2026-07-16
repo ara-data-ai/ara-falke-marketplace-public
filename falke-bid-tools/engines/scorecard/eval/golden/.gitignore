@@ -1,0 +1,22 @@
+# CONFIDENTIALITY GUARD — golden fixtures contain REAL Falke client data.
+#
+# Everything in this directory is ignored EXCEPT this file. The real client
+# bid-comparison matrix xlsx, the project baseline/aliases/scoring fixtures,
+# the gold-expectation constants, the real modeling anchor tables, and the
+# gold test modules (whose assertions embed client firm names and dollars)
+# stay LOCAL-ONLY on this machine:
+#   - never committed to the FALKE workspace repo,
+#   - never staged by release.sh (stage = `git archive` of TRACKED files only,
+#     so untracked files physically cannot enter the published bundle),
+#   - belt-and-suspenders on top of the plugin-level *.xlsx ignore, the
+#     workspace-level *.xlsx ignore, and release.sh's [5/8] client-token
+#     containment scan.
+# This mirrors engines/matrix/eval/golden/.gitignore (the Floyd-approved
+# matrix golden-dir pattern). If these fixtures are lost, re-stage them from
+# the provenance paths listed in README.md (local-only, sits beside this file
+# when the gold suite is installed).
+#
+# Established by P0-1 (single-source the scorecard engine), Floyd consolidated
+# ruling 2026-07-15, verdict (a).
+*
+!.gitignore

@@ -27,6 +27,37 @@ invoking the engine — never guess "most recent."
 
 State the resolved path back to the user before running the engine.
 
+## Sheet selection (ruled default — Marvin P0-7)
+
+The engine decides WHICH sheet of the workbook it consumes; it is never a
+workbook-ordering accident:
+
+- **Default: `Leveled_Normalized`** when present — the apples-to-apples board
+  comparison basis (grand totals are producer-verified identical to the
+  as-submitted mirror; leveling reclassifies line items between trades, it
+  never changes a bidder's price). No flag needed.
+- **Legacy matrices** (single sheet, no leveled view — pre-leveling format)
+  consume their only sheet; the card carries the legacy disclosure.
+- **A producer workbook MISSING the leveled sheet hard-stops (exit 2)** naming
+  the expected sheet. There is no silent fallback; re-generate the matrix or
+  pass `--sheet` to make a non-default read an explicit, logged choice.
+- **`--sheet Bid_Form` (mirror mode) is for reconciliation/verification,
+  dispute support, or debugging ONLY.** A mirror run is an INTERNAL artifact —
+  never deliver a board-facing final from the mirror when a leveled sheet
+  exists (its division figures are not apples-to-apples, and its card renders
+  a warning disclosure unconditionally). If Falke ever wants an "as-submitted"
+  board view as a product feature, route that decision through Derick — it is
+  not a flag flip on a render.
+
+Every card renders the consumed-sheet disclosure line, and
+`scorecard_run.json` records `sheet.name` / `sheet.mode` / `sheet.disclosure`.
+
+The engine also checks the workbook's producer stamp (create-matrix writes
+producer + format version as invisible document properties). An unstamped
+workbook (legacy / pre-stamp) is allowed and logged; a stamp OUTSIDE the
+scorecard's supported range hard-stops (exit 2) naming both versions —
+regenerate the matrix or update the scorecard, never force-parse.
+
 ## Prompt-for-missing-parameters
 
 The engine hard-stops if any of the four numeric/title parameters is missing.
@@ -139,15 +170,17 @@ fi
 # ... add $HTML_ONLY to the scorecard.cli invocation above.
 ```
 
-Add `--refit` on the first build/QA run to re-fit the Section C + Overall curves
-with scipy and print them against the published modeling ranges. (`--html-only`
+Add `--refit` on the first build/QA run to re-fit the Section C models
+(volatility + drift) with scipy and print them against the published modeling
+ranges. (The Overall presentation curve is RETIRED — P0-6; Overall is the
+honest weighted average and nothing adjusts it.) (`--html-only`
 is also forced automatically by the render-mode marker above when no PDF engine
 is available.)
 
 Run `python3 -m scorecard.cli --help` for the full flag list — argparse is the
-authoritative contract for every option (optional flags: `--qual-notes`,
-`--aliases`, `--exclude`, `--exclusions`, `--variance-mid`, `--region`,
-`--region-full`, `--baseline-year`, `--config`, `--engine`).
+authoritative contract for every option (optional flags: `--sheet`,
+`--qual-notes`, `--aliases`, `--exclude`, `--exclusions`, `--variance-mid`,
+`--region`, `--region-full`, `--baseline-year`, `--config`, `--engine`).
 
 ## Required vs optional (hard-stop behavior)
 
@@ -168,7 +201,8 @@ SF and the baseline to satisfy both gates. Everything else is optional.
   real render: the plain-English Scorecard Summary (winner + why + caveats,
   Falke-branded), the companion the Falke reviewer reads. Surface it to the user.
 - `scorecard_run.json` — provenance/audit: `run_id`, `full_coverage`,
-  `overall_label`, per-bidder rank/total/$/SF/tier/overall, and the run log.
+  `overall_label`, the consumed sheet (`sheet.name` / `sheet.mode` /
+  `sheet.disclosure`), per-bidder rank/total/$/SF/tier/overall, and the run log.
 - `audit_report.md` — written by the Audit Step (see below).
 
 ## Audit Step (runs AFTER the engine, BEFORE ship)
@@ -195,13 +229,14 @@ The audit reads `scorecard_run.json` plus the rendered `scorecard.pdf` /
 
 ## The coverage / Overall-/100 rule (read before reporting results)
 
-The Overall /100 column reproduces the gold-standard presentation card **only at
-100% qualitative coverage** (analyst/LLM category scores supplied for every
-external category). For partial/unattended runs the engine ships **provisional
-weighted averages** (never rescaled), withholds the curve, and labels the column
-PROVISIONAL with the coverage %. Check `full_coverage` / `overall_label` in
-`scorecard_run.json` and report which state the run is in. Do not present a
-provisional run as a gold-card reproduction.
+The Overall /100 column IS the honest weighted average of the framework-
+weighted category scores — nothing adjusts it (the former presentation curve
+was RETIRED under P0-6 because it could re-order the award ranking). At
+partial qualitative coverage the engine ships **provisional weighted
+averages** (never rescaled) and labels the column PROVISIONAL with the
+coverage %. Check `full_coverage` / `overall_label` in `scorecard_run.json`
+and report which state the run is in. Do not present a provisional run as
+final.
 
 ## PDF engine
 

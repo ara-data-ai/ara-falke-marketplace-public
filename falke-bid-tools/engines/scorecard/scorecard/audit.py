@@ -8,7 +8,9 @@ reconciled (rubric §0).
 
 Determinism contract: NO LLM, NO network. Pure arithmetic, set logic, regex.
 Every check runs every time (failures do NOT short-circuit) so the report is
-always complete. Implements checks C1..C16 from the scorecard audit rubric.
+always complete. Implements checks C1..C16 from the scorecard audit rubric,
+plus C17 (producer quarantine marker) and C18 (cross-sheet grand-total
+tie-out) from Marvin's P0-7 sheet ruling.
 
 Severity -> verdict (rubric §2):
   - any BLOCKER fail              -> FAIL
@@ -408,30 +410,51 @@ def check_c10(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
 
 
 # ----------------------------------------------------------------------------
-# C11 — Curve labeling (presentation vs raw)
+# C11 — Overall is the honest weighted average (curve retired, P0-6)
 # ----------------------------------------------------------------------------
-_CURVE_LABEL_RE = re.compile(
-    r"(?i)presentation adjustment|presentation-enhanced|curved.*raw retained|"
-    r"raw weighted average")
-
-
 def check_c11(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
-    bidders = pipeline_result["bidders"]
-    applied_any = any(b["overall"].get("applied") for b in bidders)
-    label = pipeline_result.get("overall_label", "")
-    ev = {"curve_applied": applied_any, "overall_label": label}
-    if not applied_any:
-        return CheckResult("C11", "Curve labeling (presentation vs raw)", WARN, PASS,
-                           "C11 PASS — Overall curve not applied; honest weighted average shown.", ev)
-    raw_present = all(b["overall"].get("weighted_average") is not None for b in bidders)
-    labeled = _CURVE_LABEL_RE.search(label) is not None
-    if raw_present and labeled:
-        return CheckResult("C11", "Curve labeling (presentation vs raw)", WARN, PASS,
-                           "C11 PASS — curve disclosed as presentation adjustment; raw weighted "
-                           "average retained.", ev)
-    why = "raw missing" if not raw_present else "not labeled as presentation adjustment"
-    return CheckResult("C11", "Curve labeling (presentation vs raw)", WARN, FAIL,
-                       f"C11 FAIL — curve applied but {why}. WARN.", ev)
+    """Re-derive each bidder's Overall from its 1-10 category scores and the
+    run's category weights (weighted SUM over scored categories x10 — the
+    scoring contract), and require the emitted Overall to equal it. Nothing —
+    curve, bonus, or manual edit — may adjust the ranked number (P0-6, Floyd
+    consolidated ruling verdict d)."""
+    cats = pipeline_result.get("categories", []) or []
+    weights = {c["key"]: c["weight_pct"] / 100.0 for c in cats}
+    per_bidder = []
+    bad = None
+    for b in pipeline_result["bidders"]:
+        num = 0.0
+        any_scored = False
+        for key, w in weights.items():
+            s = (b.get("scores") or {}).get(key)
+            if s is not None:
+                num += float(s) * w
+                any_scored = True
+        expected = round(num * 10.0, 1) if any_scored else None
+        emitted = b["overall"].get("numeric")
+        ok = (expected is None and emitted is None) or (
+            expected is not None and emitted is not None
+            and abs(emitted - expected) <= 0.05)
+        per_bidder.append({"name": b["name"], "emitted": emitted,
+                           "recomputed_wavg": expected})
+        if not ok and bad is None:
+            bad = (b["name"], emitted, expected)
+    if bad is None:
+        return CheckResult(
+            "C11", "Overall = honest weighted average (no adjustment)",
+            BLOCKER, PASS,
+            f"C11 PASS — every Overall re-derives as the raw weighted average "
+            f"of its category scores ({len(per_bidder)} bidder(s)); no "
+            f"adjustment present.",
+            {"per_bidder": per_bidder})
+    nm, emitted, expected = bad
+    return CheckResult(
+        "C11", "Overall = honest weighted average (no adjustment)",
+        BLOCKER, FAIL,
+        f"C11 FAIL — {nm}: emitted Overall {emitted} != recomputed raw "
+        f"weighted average {expected}. Something adjusted the ranked number "
+        f"(the presentation curve is retired — P0-6). BLOCKER.",
+        {"per_bidder": per_bidder})
 
 
 # ----------------------------------------------------------------------------
@@ -599,6 +622,107 @@ def check_c16(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
 
 
 # ----------------------------------------------------------------------------
+# C17 — Producer quarantine marker (Marvin P0-7 hard rule 5)
+# ----------------------------------------------------------------------------
+def check_c17(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    flagged = bool(getattr(matrix_parse, "quarantine_flag", False))
+    ev = {"quarantine_banner": flagged, "sheet": matrix_parse.sheet_name}
+    if flagged:
+        return CheckResult(
+            "C17", "Producer quarantine marker", BLOCKER, FAIL,
+            "C17 FAIL — the workbook carries the producer's Stage-6b "
+            "quarantine banner (POST_WRITE_TIEOUT_FAILURE: \"AUTOMATED CHECK "
+            "FAILED\"). Figures failed the matrix tool's own self-check; a "
+            "scorecard must not be delivered from this workbook. Re-run the "
+            "matrix cleanly first. BLOCKER.", ev)
+    return CheckResult(
+        "C17", "Producer quarantine marker", BLOCKER, PASS,
+        "C17 PASS — no producer quarantine banner on the consumed sheet.", ev)
+
+
+# ----------------------------------------------------------------------------
+# C18 — Cross-sheet grand-total tie-out (Marvin P0-7 hard rule 4)
+# ----------------------------------------------------------------------------
+def check_c18(matrix_parse, run_inputs, pipeline_result) -> CheckResult:
+    """The producer enforces mirror-GT == leveled-GT. When the workbook
+    carries BOTH sheets, independently parse the OTHER sheet and tie every
+    bidder's grand total out against the consumed parse. A mismatch means the
+    producer contract itself is broken -> BLOCKER. Single-data-sheet
+    workbooks (legacy) report INFO/not-applicable."""
+    from .matrix import LEVELED_SHEET, MIRROR_SHEET, MatrixParser
+
+    path = pipeline_result.get("meta", {}).get("matrix_path")
+    consumed = matrix_parse.sheet_name
+    ev: Dict[str, Any] = {"consumed_sheet": consumed, "matrix_path": path}
+    if not path or not os.path.exists(path):
+        return CheckResult(
+            "C18", "Cross-sheet grand-total tie-out", WARN, FAIL,
+            "C18 FAIL — matrix path unavailable to the audit; cross-sheet "
+            "tie-out not performed. WARN.", ev)
+    try:
+        import openpyxl as _oxl
+        wb = _oxl.load_workbook(path, read_only=True, data_only=True)
+        names = list(wb.sheetnames)
+    except Exception as exc:
+        return CheckResult(
+            "C18", "Cross-sheet grand-total tie-out", WARN, FAIL,
+            f"C18 FAIL — could not re-open the workbook for the cross-sheet "
+            f"tie-out ({exc}). WARN.", ev)
+    other = None
+    for cand in (LEVELED_SHEET, MIRROR_SHEET):
+        if cand != consumed and cand in names:
+            other = cand
+            break
+    ev["other_sheet"] = other
+    if other is None:
+        return CheckResult(
+            "C18", "Cross-sheet grand-total tie-out", INFO, PASS,
+            "C18 INFO — single data sheet in workbook; cross-sheet tie-out "
+            "not applicable.", ev)
+    try:
+        mcfg = dict(run_inputs.block("matrix"))
+        mcfg["sheet_name"] = other
+        other_parsed = MatrixParser(mcfg).parse(path)
+    except Exception as exc:
+        return CheckResult(
+            "C18", "Cross-sheet grand-total tie-out", WARN, FAIL,
+            f"C18 FAIL — the other sheet ({other}) did not parse for the "
+            f"tie-out ({exc}). WARN.", ev)
+
+    def _totals(blocks):
+        out: Dict[str, List] = {}
+        for b in blocks:
+            out.setdefault(b.norm, []).append(b.grand_total)
+        return {k: sorted((x for x in v if x is not None)) for k, v in out.items()}
+
+    mine = _totals(matrix_parse.blocks)
+    theirs = _totals(other_parsed.blocks)
+    ev["consumed_totals"] = mine
+    ev["other_totals"] = theirs
+    if set(mine) != set(theirs):
+        only_mine = sorted(set(mine) - set(theirs))
+        only_theirs = sorted(set(theirs) - set(mine))
+        return CheckResult(
+            "C18", "Cross-sheet grand-total tie-out", BLOCKER, FAIL,
+            f"C18 FAIL — bidder fields differ between {consumed} and {other} "
+            f"(only on consumed: {only_mine}; only on other: {only_theirs}). "
+            f"Producer contract broken. BLOCKER.", ev)
+    for norm in mine:
+        a, b = mine[norm], theirs[norm]
+        if len(a) != len(b) or any(abs(x - y) > MONEY_TOL for x, y in zip(a, b)):
+            return CheckResult(
+                "C18", "Cross-sheet grand-total tie-out", BLOCKER, FAIL,
+                f"C18 FAIL — grand totals for '{norm}' differ between "
+                f"{consumed} ({a}) and {other} ({b}). The producer enforces "
+                f"mirror-GT == leveled-GT; a mismatch means the producer "
+                f"contract itself is broken. BLOCKER.", ev)
+    return CheckResult(
+        "C18", "Cross-sheet grand-total tie-out", BLOCKER, PASS,
+        f"C18 PASS — all {len(mine)} bidder grand totals tie out between "
+        f"{consumed} and {other} (penny-exact).", ev)
+
+
+# ----------------------------------------------------------------------------
 # orchestration
 # ----------------------------------------------------------------------------
 @dataclass
@@ -649,7 +773,7 @@ def _verdict(checks: List[CheckResult]) -> str:
 def audit(matrix_parse, run_inputs, pipeline_result,
           *, aliases: Optional[Dict[str, str]] = None,
           report_text: str = "") -> AuditResult:
-    """Run all 16 checks (C1..C16). Pure: no LLM, no network. Failures do NOT
+    """Run all 18 checks (C1..C18). Pure: no LLM, no network. Failures do NOT
     short-circuit — every check runs so the report is complete.
 
     matrix_parse    : ParsedMatrix (the structured parse).
@@ -676,6 +800,8 @@ def audit(matrix_parse, run_inputs, pipeline_result,
         check_c14(matrix_parse, run_inputs, pipeline_result),
         check_c15(matrix_parse, run_inputs, pipeline_result, aliases=aliases),
         check_c16(matrix_parse, run_inputs, pipeline_result),
+        check_c17(matrix_parse, run_inputs, pipeline_result),
+        check_c18(matrix_parse, run_inputs, pipeline_result),
     ]
     verdict = _verdict(checks)
     return AuditResult(
@@ -748,6 +874,9 @@ def render_report_md(ar: AuditResult, matrix_parse, run_inputs, pipeline_result)
     else:
         sf_src_label = "explicit --sf-basis / run inputs"
         gsf_note = "— REPORTED ONLY"
+    lines.append(f"- consumed sheet: {matrix_parse.sheet_name} "
+                 f"(mode: {getattr(matrix_parse, 'sheet_mode', 'n/a')} — "
+                 f"Marvin P0-7)")
     lines.append(f"- sf_basis: {run.sf_basis:,.0f} (source: {sf_src_label})")
     lines.append(f"- matrix GSF: {('—' if gsf is None else format(gsf, ',.0f'))} "
                  f"(source: matrix) {gsf_note}")

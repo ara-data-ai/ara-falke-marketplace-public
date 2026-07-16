@@ -3,9 +3,13 @@
 
 Honors the owner's decisions:
   - Hybrid: auto-compute matrix facts; REQUIRE sf_basis + baseline band (hard stop).
-  - Always compute the honest weighted average; label any curve as a presentation
-    adjustment; withhold the curve until qualitative coverage = 100%.
+  - Overall /100 IS the honest weighted average — nothing adjusts it. (The
+    presentation curve was retired under P0-6, Floyd consolidated ruling
+    verdict d: a device that re-orders the award ranking is scoring, not
+    presentation.)
   - Qualitative scores LLM-drafted with human override; missing -> null + flag.
+  - Sheet consumption is an explicit, ruled decision (Marvin P0-7): default =
+    the leveled view; every card carries the consumed-sheet disclosure.
 """
 from __future__ import annotations
 
@@ -19,9 +23,9 @@ from .matrix import (MatrixParser, ParsedMatrix, apply_display_aliases,
                      apply_exclusions, normalize_name)
 from .mechanical import (TIER_LABELS, build_mechanical, fingerprint_test,
                          rank_bidders)
-from .modeling import (apply_overall, expected_final_band, volatility_band)
-from .narratives import (FRAMEWORK_ROWS, TIER_QUICK_READ, merge_qualitative_notes,
-                         section_c_interpretation)
+from .modeling import (expected_final_band, volatility_band)
+from .narratives import (FRAMEWORK_ROWS, SHEET_DISCLOSURES, TIER_QUICK_READ,
+                         merge_qualitative_notes, section_c_interpretation)
 from .scoring import (CATEGORY_DISPLAY, CATEGORY_ORDER, apply_overrides,
                       build_bidder_scores)
 from .scoring_inputs import build_scores_from_inputs
@@ -87,6 +91,7 @@ def run_scorecard(
     project_name: Optional[str] = None,
     framework: Optional[List[Dict]] = None,
     category_scores: Optional[Dict[str, Dict]] = None,
+    sheet: Optional[str] = None,
 ) -> Dict:
     """Run the full pipeline. Returns a result dict + run log.
 
@@ -115,6 +120,12 @@ def run_scorecard(
         second source of scores). The legacy scaffold path (mechanical seeds +
         overrides + config weights) remains ONLY for direct programmatic
         callers that omit both.
+    sheet: optional EXPLICIT sheet selection (CLI --sheet). Overrides the
+        config matrix.sheet_name for this run. Default (None) resolves per
+        Marvin's P0-7 ruling: Leveled_Normalized when present; a single-sheet
+        legacy workbook uses its only sheet; a producer workbook missing the
+        leveled view hard-stops. The consumed sheet + mode + the mandatory
+        on-card disclosure are recorded on result['sheet'].
     """
     # ---- scoring-inputs contract (xlsx = single source of truth) ----
     if (framework is None) != (category_scores is None):
@@ -142,14 +153,17 @@ def run_scorecard(
     log: List[str] = [f"run_id={run_id} ts={_dt.datetime.utcnow().isoformat()}Z"]
 
     # ---- 1. PARSE (generic detection) ----
-    parser = MatrixParser(cfg.block("matrix"))
+    matrix_cfg = dict(cfg.block("matrix"))
+    if sheet:
+        matrix_cfg["sheet_name"] = sheet   # explicit CLI --sheet wins
+    parser = MatrixParser(matrix_cfg)
     parsed: ParsedMatrix = parser.parse(
         xlsx_path,
         peer_fraction=cfg.block("qa").get("completeness_peer_fraction", 0.5),
     )
     # ---- 1a0. DISPLAY ALIASES (optional; default empty) ----
     # Rewrite the SHOWN bidder name to the board-card short names BEFORE anything
-    # downstream keys off it (overrides lookup, tier_bonus, ranking, render). The
+    # downstream keys off it (overrides lookup, ranking, render). The
     # raw matrix name is retained on the block + logged for audit (Marvin §1.5).
     # Caller-supplied aliases win over the config block.
     alias_map: Dict[str, str] = dict(cfg.block("aliases") or {})
@@ -264,30 +278,19 @@ def run_scorecard(
             if overrides and m.name in overrides:
                 apply_overrides(scores, overrides[m.name])
 
+        # ---- Overall /100 = the HONEST weighted average, nothing else.
+        # (Presentation curve + tier_bonus retired under P0-6: a device that
+        # can re-order the award ranking is scoring, not presentation.)
         wa = scores.weighted_average_x10(weights_in_use)
-        overall = apply_overall(
-            wa["wavg"] if wa["wavg"] is not None else 0.0,
-            float(m.per_sf), wa["coverage"], cfg,
-            tier_bonus=float(
-                (cfg.block("overall_curve").get("tier_bonus") or {}).get(m.name, 0)),
-        ) if wa["wavg"] is not None else {
-            "weighted_average": None, "curved": None, "applied": False,
-            "coverage": 0.0, "label": "No scored categories."}
-
-        # display Overall: curved if applied else weighted average; provisional if <100%
-        if overall.get("applied"):
-            overall_numeric = overall["curved"]
-            overall_display = f"{overall['curved']:.0f}"
+        wavg = wa["wavg"]
+        overall_numeric = round(wavg, 1) if wavg is not None else None
+        if wavg is None:
+            overall_display = "—*"
+        elif wa["coverage"] < 0.999:
+            overall_display = (f"{wavg:.0f}* (prov., "
+                               f"{wa['coverage']*100:.0f}% coverage)")
         else:
-            wavg = overall.get("weighted_average")
-            overall_numeric = wavg
-            if wa["coverage"] < 0.999 and wavg is not None:
-                overall_display = (f"{wavg:.0f}* (prov., "
-                                   f"{wa['coverage']*100:.0f}% coverage)")
-            elif wavg is not None:
-                overall_display = f"{wavg:.0f}"
-            else:
-                overall_display = "—*"
+            overall_display = f"{wavg:.0f}"
 
         quick_read = TIER_QUICK_READ[m.tier]
         bidder = {
@@ -312,10 +315,8 @@ def run_scorecard(
             "overall": {
                 "numeric": overall_numeric,
                 "display": overall_display,
-                "weighted_average": overall.get("weighted_average"),
-                "curved": overall.get("curved"),
+                "weighted_average": overall_numeric,
                 "coverage": wa["coverage"],
-                "applied": overall.get("applied", False),
             },
         }
         bidders_out.append(bidder)
@@ -348,15 +349,11 @@ def run_scorecard(
 
     # ---- 6. coverage summary + provenance ----
     full_coverage = all(b["overall"]["coverage"] >= 0.999 for b in bidders_out)
-    curve_on = bool(cfg.block("overall_curve").get("apply_curve", False))
-    if curve_on and full_coverage:
-        overall_label = ("Overall = applied PRESENTATION ADJUSTMENT (compression "
-                         "+ price-value penalty); raw weighted average alongside.")
-    elif curve_on and not full_coverage:
-        overall_label = ("Overall = honest weighted average (PROVISIONAL — curve "
-                         "withheld until qualitative coverage = 100%).")
-    else:
+    if full_coverage:
         overall_label = "Overall = honest weighted average (deterministic)."
+    else:
+        overall_label = ("Overall = honest weighted average (PROVISIONAL — "
+                         "qualitative coverage below 100%).")
 
     # ---- baseline (Section A) — PARAMETER, passed through ----
     baseline = _build_baseline_block(cfg, baseline_lines)
@@ -365,12 +362,23 @@ def run_scorecard(
         "meta": {
             "run_id": run_id,
             "project_name": project_name,
+            "matrix_path": xlsx_path,
             "subtitle": ("Presentation-Enhanced Takeoff + Bid Comparison + "
                          "Scoring & Rankings (modeled; no matrix data changes)"),
             "footer_note": (f"Falke Corp · prepared by ARA · "
                             f"{_dt.date.today().isoformat()} · base/grand-total "
                             f"construction cost only · SF basis "
-                            f"{cfg.run.sf_basis:,.0f} · run {run_id}"),
+                            f"{cfg.run.sf_basis:,.0f} · sheet "
+                            f"{parsed.sheet_name} ({parsed.sheet_mode}) · "
+                            f"run {run_id}"),
+        },
+        # consumed-sheet provenance (Marvin P0-7): name, mode, and the
+        # mandatory board-facing disclosure line — rendered ON the card and
+        # recorded in scorecard_run.json.
+        "sheet": {
+            "name": parsed.sheet_name,
+            "mode": parsed.sheet_mode,
+            "disclosure": SHEET_DISCLOSURES[parsed.sheet_mode],
         },
         "baseline": baseline,
         "bidders": bidders_out,
@@ -391,6 +399,7 @@ def preview_baseline(
     cfg: Config,
     *,
     baseline_lines: Optional[List[Dict]] = None,
+    sheet: Optional[str] = None,
 ) -> Dict:
     """Build a human-readable ECHO of the supplied cost baseline + run the
     bid-anchoring fingerprint check, WITHOUT rendering a scorecard.
@@ -461,7 +470,10 @@ def preview_baseline(
     # ---- bid-anchoring fingerprint check (SAME logic the audit uses) ----
     fingerprints = []
     if baseline_lines:
-        parser = MatrixParser(cfg.block("matrix"))
+        matrix_cfg = dict(cfg.block("matrix"))
+        if sheet:
+            matrix_cfg["sheet_name"] = sheet
+        parser = MatrixParser(matrix_cfg)
         parsed = parser.parse(
             xlsx_path,
             peer_fraction=cfg.block("qa").get("completeness_peer_fraction", 0.5),

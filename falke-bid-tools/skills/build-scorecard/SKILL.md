@@ -104,6 +104,11 @@ the matrix GSF, invent a band, or invent weights/scores.
 
 1. **Resolve the matrix.** Detect the uploaded file per the Upload Detection
    section in `reference/runbook.md`. If ambiguous, confirm with the user.
+   The engine consumes the workbook's `Leveled_Normalized` sheet by DEFAULT
+   (Marvin's P0-7 ruling; legacy single-sheet matrices use their only sheet,
+   with the legacy disclosure on the card). `--sheet Bid_Form` is for
+   reconciliation/dispute/debug runs ONLY — never a board deliverable when a
+   leveled sheet exists. See "Sheet selection" in `reference/runbook.md`.
 2. **Collect parameters.** Get the four required parameters from the user
    (prompt if missing). For per-project inputs: the baseline uses the
    `baseline-template.xlsx` (Falke fills it out and uploads it; a `.json`
@@ -156,7 +161,8 @@ the matrix GSF, invent a band, or invent weights/scores.
    SF decision from Step 3 — `--sf-confirmed` or `--sf-basis <value>` —
    `--baseline-confirmed` from Step 4, and `--scoring-framework` +
    `--category-scores` from Step 5). For a first build/QA run, add `--refit`
-   to re-fit the curves and print them vs the published modeling ranges.
+   to re-fit the Section C models and print them vs the published modeling
+   ranges.
 8. **Read the run log.** The engine prints a RUN LOG; surface any QA-fingerprint
    hits, duplicate drops, or completeness flags to the user (these are board
    disclosure items, not auto-fails).
@@ -184,8 +190,8 @@ the matrix GSF, invent a band, or invent weights/scores.
 ## Reference (load only when needed)
 
 - `reference/runbook.md` — the exact run command, the inputs, the outputs, the
-  Upload Detection rule, the Audit Step, and the coverage/curve rule (the one
-  source of truth for how to invoke).
+  Upload Detection rule, the Sheet-selection rule, the Audit Step, and the
+  coverage/Overall rule (the one source of truth for how to invoke).
 - `reference/inputs.md` — the per-project input templates and where to find the
   blanks and the synthetic sample validation examples.
 - `reference/config.md` — the tunable config reference (what lives in

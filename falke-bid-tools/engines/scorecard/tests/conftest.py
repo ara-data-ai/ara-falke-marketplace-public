@@ -46,11 +46,24 @@ GOLD_ALIASES = {
     "Borealis Builders Solutions": "Borealis",
 }
 
-# sample-card published Overall (curve ON, 100% coverage; Cascade via +5 bonus)
+# HISTORICAL sample-card Overall (curve ON, 100% coverage; Cascade via +5
+# bonus). The curve was RETIRED (P0-6) — these no longer reproduce from a live
+# run, and that is correct; kept only as the archived-card record.
 GOLD_OVERALL = {
     "Acme": 84, "Borealis": 82, "Cascade": 75, "Dorne": 69,
     "Crest": 65, "Fjord": 56, "Granite": 51,
 }
+
+# THE CURRENT CONTRACT (post-P0-6): Overall = the honest weighted average.
+# Published synthetic wavg per firm (the modeling anchor wavg column).
+GOLD_WAVG = {
+    "Acme": 82.0, "Borealis": 80.0, "Crest": 72.0, "Cascade": 70.0,
+    "Dorne": 69.0, "Fjord": 47.0, "Granite": 39.0,
+}
+# ranking under the raw weighted average — note Crest (#3) sits ABOVE Cascade
+# and Dorne here; the retired curve demoted Crest to #5 via the $/SF penalty.
+GOLD_RANK_ORDER_RAW = ["Acme", "Borealis", "Crest", "Cascade", "Dorne",
+                       "Fjord", "Granite"]
 
 # ---- sample-card run parameters ----
 SF_BASIS = 16000
@@ -96,7 +109,7 @@ GOLD_TIERS = {
 # ---- dropped bidders (must NOT appear in included field) ----
 DROPPED = {"Harbor", "Mc Bride Builders", "Borealis Builders Solutions"}
 
-# ---- sample card Overall ranking order (Marvin §9, curve ON) ----
+# ---- HISTORICAL sample card ranking order (Marvin §9, curve ON — retired) ----
 GOLD_RANK_ORDER = ["Acme", "Borealis", "Cascade", "Dorne", "Crest", "Fjord", "Granite"]
 
 
